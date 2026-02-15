@@ -1,0 +1,15 @@
+.status {
+  min-height: 1.5rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  padding: 0.25rem 0;
+}
+
+.status--error {
+  color: var(--error);
+  background: var(--error-bg);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+}

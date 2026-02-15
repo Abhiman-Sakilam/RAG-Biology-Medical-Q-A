@@ -1,0 +1,15 @@
+# Run from project root: docker compose -f setup/docker-compose.yaml up --build
+# Paths below are relative to this file's directory (setup/); ../ = project root
+services:
+  rag:
+    build:
+      context: ..
+      dockerfile: setup/Dockerfile
+    ports:
+      - "8060:8060"
+    env_file:
+      - .env
+    volumes:
+      - ../data:/app/data
+      - ../artifacts:/app/artifacts
+    # Override to run CLI: run "python scripts/run_rag.py --question '...'"

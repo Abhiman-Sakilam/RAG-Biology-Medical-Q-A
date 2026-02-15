@@ -1,0 +1,20 @@
+.env
+setup/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+artifacts/
+scripts/__pycache__/
+src/__pycache__/
+setup/.env
+src/data/__pycache__/
+src/data/__pycache__/
+src/generation/__pycache__/
+src/pipeline/__pycache__/
+src/retrieval/__pycache__/
+src/prompts/__pycache__/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

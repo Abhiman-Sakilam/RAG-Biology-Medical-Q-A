@@ -1,0 +1,123 @@
+.result-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  animation: resultIn 0.35s ease;
+}
+
+@keyframes resultIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.result-card__title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 0 0 0.75rem;
+}
+
+.result-card__answer {
+  white-space: pre-wrap;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: var(--text);
+  margin-bottom: 1.25rem;
+}
+
+.result-card__answer:empty::before,
+.result-card__answer:only-child:not([class]) {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.result-card__passages {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.result-card__passages-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  list-style: none;
+  user-select: none;
+}
+
+.result-card__passages-summary::-webkit-details-marker {
+  display: none;
+}
+
+.result-card__passages-summary::before {
+  content: '▸ ';
+  display: inline-block;
+  margin-right: 0.35rem;
+  transition: transform 0.2s;
+}
+
+.result-card__passages[open] .result-card__passages-summary::before {
+  transform: rotate(90deg);
+}
+
+.result-card__passages-list {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.passage {
+  padding: 1rem 1.1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.passage:hover {
+  border-color: #3d4a58;
+  background: #1e2630;
+}
+
+.passage__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.passage__badge {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.passage__score {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.passage__text {
+  white-space: pre-wrap;
+  line-height: 1.55;
+  color: var(--text);
+}

@@ -1,0 +1,21 @@
+# Do not bake secrets or large data into the image
+.env
+.env.*
+setup/.env
+
+# Data and artifacts mounted at runtime
+data/
+artifacts/
+
+# Git and cache
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+*.pyc
+
+# Docs and dev (optional; include Plan/README if you want them in image)
+# Plan.md
+# README.md
