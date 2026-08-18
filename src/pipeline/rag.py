@@ -64,7 +64,7 @@ def load_indices(mode: str = "bm25") -> None:
 
 
 def _ensure_loaded(mode: str) -> None:
-    if _bm25_state is None:
+    if _bm25_state is None or (mode == "hybrid" and _dense_state is None):
         load_indices(mode)
 
 
