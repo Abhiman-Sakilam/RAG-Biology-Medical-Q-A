@@ -14,7 +14,13 @@
 #   See: https://platform.openai.com/docs/models
 
 [retrieval]
+mode = "bm25"          # "bm25" | "hybrid"
 top_k = 5
+sparse_top_n = 20
+dense_top_n = 20
+fusion_k = 60
+rerank = false
+rerank_top_n = 5
 
 [llm]
 model = "gpt-4o-mini"

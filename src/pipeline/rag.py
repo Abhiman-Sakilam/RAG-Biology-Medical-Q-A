@@ -17,9 +17,20 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def _load_config() -> Dict[str, Any]:
-    path = _project_root() / "config.toml"
-    defaults = {"retrieval": {"top_k": 5}, "llm": {"model": "llama-3.3-70b-versatile", "max_tokens": 512, "temperature": 0.2}}
+def _load_config(path: Path = None) -> Dict[str, Any]:
+    path = path or (_project_root() / "config.toml")
+    defaults = {
+        "retrieval": {
+            "mode": "bm25",
+            "top_k": 5,
+            "sparse_top_n": 20,
+            "dense_top_n": 20,
+            "fusion_k": 60,
+            "rerank": False,
+            "rerank_top_n": 5,
+        },
+        "llm": {"model": "llama-3.3-70b-versatile", "max_tokens": 512, "temperature": 0.2},
+    }
     if not path.exists():
         return defaults
     with open(path, "rb") as f:
