@@ -8,7 +8,7 @@ This guide explains what the project does, what technologies and patterns are us
 
 This is a **RAG (Retrieval-Augmented Generation)** application for **biology/medical Q&A**. It:
 
-1. **Retrieves** relevant text passages from a corpus using **BM25**
+1. **Retrieves** relevant text passages from a corpus using **BM25** (default) or **hybrid retrieval** — BM25 + dense embeddings (OpenAI) fused via Reciprocal Rank Fusion, with optional **Voyage AI reranking** — as an opt-in mode set in config
 2. **Prompts** an **LLM** (Groq or OpenAI) with those passages and the user question
 3. **Returns** an answer plus the supporting passages
 
@@ -22,11 +22,23 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 
 | | |
 |---|---|
-| **What** | BM25 is a bag-of-words ranking algorithm (keyword-based). |
+| **What** | BM25 is a bag-of-words ranking algorithm (keyword-based). This is the default retrieval mode (`[retrieval] mode = "bm25"`). |
 | **Why** | Simple, fast, no embeddings; works well when exact/overlapping terms matter (e.g. medical terms). |
 | **How** | Corpus is loaded from `data/json/text-corpus/*.json` (each item has `passage` and `id`). Passages are tokenized (lowercase `\w+`), then `BM25Okapi(tokenized)` builds the index. `search(query, bm25, corpus, id_to_passage, k)` tokenizes the query, gets BM25 scores, and returns top-k `(passage_id, text, score)`. |
 
 **Dependency:** `rank_bm25`
+
+---
+
+### 1b. Hybrid retrieval + reranking (opt-in) — `src/retrieval/dense.py`, `src/retrieval/fusion.py`, `src/retrieval/rerank.py`
+
+| | |
+|---|---|
+| **What** | An opt-in retrieval mode (`[retrieval] mode = "hybrid"`) that combines BM25 with dense (embedding-based) retrieval, fuses the two rankings, and optionally reranks the fused candidates. |
+| **Why** | Dense embeddings catch semantically related passages that don't share exact keywords with the query; combining with BM25 (via fusion) tends to beat either alone. Reranking with a cross-encoder-style model further sharpens the final top-k. |
+| **How** | `src/retrieval/dense.py`: `build_dense_index()`/`embed_texts()` call OpenAI's `text-embedding-3-small` to embed the corpus into a FAISS `IndexFlatIP`; `dense_search()` embeds the query and searches the index. The index is built and persisted once via `scripts/build_embeddings.py` (into `artifacts/dense_index/`) rather than rebuilt per request. `src/retrieval/fusion.py`: `rrf_fuse(sparse_results, dense_results, k)` combines both rankings using Reciprocal Rank Fusion. `src/retrieval/rerank.py`: `rerank(query, candidates, top_n)` calls the Voyage AI rerank API (`rerank-2` model) to re-score and reorder the fused candidate pool, used only when `[retrieval] rerank = true`. All of this is orchestrated by `src.pipeline.rag.retrieve_candidates()` (see below), which is the single implementation shared by the live pipeline and the evaluation harness. |
+
+**Dependencies:** `faiss-cpu`, `numpy`, `httpx` (plus `openai` for embeddings). Requires `OPENAI_API_KEY` (hybrid mode) and, only when `rerank = true`, `VOYAGE_API_KEY`.
 
 ---
 
@@ -36,7 +48,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | Uses the `openai` Python client to call Groq (default) or OpenAI. |
 | **Why** | To generate a single, concise answer given the retrieved context. |
-| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). |
+| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). `.env` loading is centralized in `src/config/env.py` (`load_env()`), called at import time by `llm.py`, `src/retrieval/dense.py`, and `src/retrieval/rerank.py`, so `setup/.env` is loaded regardless of which entry point/script runs first. `OPENAI_API_KEY` is also required (separately from its use as an LLM key) for hybrid mode's embeddings, and `VOYAGE_API_KEY` is required only when `[retrieval] rerank = true`. |
 
 **Dependency:** `openai`, `python-dotenv`
 
@@ -47,8 +59,8 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 | | |
 |---|---|
 | **What** | TOML file with `[retrieval]` and `[llm]` sections. |
-| **Why** | Single place for top_k, model, max_tokens, temperature without code changes. |
-| **How** | `src/pipeline/rag.py` uses `tomllib`/`tomli` to load `config.toml` at project root and merge with defaults. Used for `top_k`, `model`, `max_tokens`, `temperature` in `rag_query()`. |
+| **Why** | Single place for retrieval mode/params, model, max_tokens, temperature without code changes. |
+| **How** | `src/pipeline/rag.py` uses `tomllib`/`tomli` to load `config.toml` at project root and merge with defaults. `[retrieval]` keys: `mode` (`"bm25"` or `"hybrid"`), `top_k` (final passages returned), `sparse_top_n`/`dense_top_n` (candidates fetched from each retriever before fusion), `fusion_k` (RRF constant), `rerank` (enable Voyage reranking), `rerank_top_n` (candidates kept after reranking, before the final `top_k` cut). `[llm]` keys: `model`, `max_tokens`, `temperature`. |
 
 ---
 
@@ -88,7 +100,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | Orchestrates retrieval → context → prompt → LLM → parse. |
 | **Why** | Single entry point for “ask a question, get answer + passages.” |
-| **How** | Loads config; lazily builds one global BM25 index via `_get_index()` (calls `build_index()` once). `rag_query(question, top_k=..., config=...)` runs: `search()` → `format_passages_as_context()` → `build_rag_prompt()` → `generate()` → `parse_answer()`. Returns `(passages, answer)`. |
+| **How** | Loads config; `load_indices(mode)` builds/loads the BM25 index (and, in hybrid mode, the persisted dense index) once at process startup, and `_ensure_loaded(mode)` lazily loads them on first use otherwise. `retrieve_candidates(question, r_cfg)` runs BM25 (+ dense + RRF fusion + optional Voyage rerank, per `r_cfg`) and returns the final top-k candidates — this is the single retrieval implementation shared by `rag_query()` and `scripts/evaluate_retrieval.py`, so the eval harness always measures exactly what the live pipeline does. `rag_query(question, top_k=..., config=...)` runs: `retrieve_candidates()` → `format_passages_as_context()` → `build_rag_prompt()` → `generate()` → `parse_answer()`. Returns `(passages, answer)`. |
 
 ---
 
@@ -122,6 +134,8 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |--------|---------|
 | **`run_rag.py`** | CLI: `python scripts/run_rag.py -q "..."` (and optional `--out result.json`, `--top-k`). Calls `rag_query()`, prints answer and passages. |
 | **`search_index.py`** | BM25-only: build index and run `search(query, ...)` to print top-k passages (no LLM). Useful for debugging retrieval. |
+| **`build_embeddings.py`** | Builds the dense (embedding) index from the corpus and persists it to `artifacts/dense_index/` (FAISS index + corpus id list + a corpus hash to skip rebuilding when unchanged). Run once before enabling `mode = "hybrid"`. |
+| **`evaluate_retrieval.py`** | Phase 1 retrieval quality evaluation harness: computes Recall/MRR/nDCG@k for bm25 vs hybrid vs hybrid+rerank against the gold `relevant_passage_ids` in the test QA split, using the exact same `retrieve_candidates()` logic as the live pipeline. Writes results to `artifacts/eval/retrieval_results.json`. |
 
 ---
 
@@ -137,14 +151,13 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 
 ## Significance of the `artifacts` Folder
 
-- **In the repo:** The **artifacts** directory is **not in the repo**: it’s listed in `.gitignore`. **No Python code in this project reads or writes to `artifacts`.** So in the current codebase it is unused.
+- **In the repo:** The **artifacts** directory is **not in the repo**: it’s listed in `.gitignore`. It is, however, actively read and written by the application code:
+  - **`artifacts/dense_index/`** holds the persisted FAISS index (`index.faiss`), the corpus id order (`corpus_ids.json`), and a corpus content hash (`corpus.sha256`) used to detect when a rebuild is needed. Built and written by `scripts/build_embeddings.py` (`build_and_persist()`/`save_index()`), and read by `src.retrieval.dense.load_index()` (via `src.pipeline.rag.load_indices()`) whenever `mode = "hybrid"`.
+  - **`artifacts/eval/`** holds `retrieval_results.json`, written by `scripts/evaluate_retrieval.py` after each evaluation run.
 
-- **In Docker:** In `setup/docker-compose.yaml`, the project root’s `artifacts` is mounted into the container as `/app/artifacts`. So **artifacts** is a **designated place for runtime/generated files** when running in Docker, e.g.:
-  - Persisting the BM25 index so you don’t rebuild it every run
-  - Logs, caches, or other outputs you want to keep on the host
-  The `.dockerignore` excludes `artifacts/` from the image build, so the image doesn’t copy it; only the volume mount provides `/app/artifacts` at runtime.
+- **In Docker:** In `setup/docker-compose.yaml`, the project root’s `artifacts` is mounted into the container as `/app/artifacts`, so the persisted dense index and eval output survive across container restarts/rebuilds without being baked into the image. The `.dockerignore` excludes `artifacts/` from the image build, so the image doesn’t copy it; only the volume mount provides `/app/artifacts` at runtime.
 
-**Summary:** The **artifacts** folder is a **reserved, git-ignored directory** that is **mounted into the app in Docker** for future or manual use (e.g. index persistence, logs, cache). The application code does not use it yet; it’s there so you can add that later or use it from the host without changing the repo layout.
+**Summary:** The **artifacts** folder is a **reserved, git-ignored directory**, mounted into the app in Docker, that holds generated runtime state: the persisted dense (FAISS) index used by hybrid retrieval, and retrieval evaluation output.
 
 ---
 
@@ -154,10 +167,15 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |------|----------|
 | Config | `config.toml` (from `setup/config.toml`), `setup/.env` |
 | Corpus | `data/json/text-corpus/` |
-| Retrieval | `src/retrieval/sparse.py` |
+| Retrieval (sparse) | `src/retrieval/sparse.py` |
+| Retrieval (dense/fusion/rerank) | `src/retrieval/dense.py`, `src/retrieval/fusion.py`, `src/retrieval/rerank.py` |
+| Env loading | `src/config/env.py` |
 | Prompts | `src/prompts/` |
 | LLM | `src/generation/llm.py` |
 | Pipeline | `src/pipeline/rag.py` |
 | Server | `scripts/run_server.py` |
+| Embedding build script | `scripts/build_embeddings.py` |
+| Retrieval eval harness | `scripts/evaluate_retrieval.py` |
+| Tests | `tests/` (run with `.venv/bin/pytest`; deps in `setup/requirements-dev.txt`) |
 | Frontend | `frontend/` |
 | Docker | `setup/Dockerfile`, `setup/docker-compose.yaml` |

@@ -38,6 +38,16 @@ def test_embed_texts_normalizes_vectors():
     assert abs(norm - 1.0) < 1e-6
 
 
+def test_embed_texts_preserves_order_across_multiple_batches():
+    client = _FakeEmbeddingClient({"a": [1.0, 0.0], "b": [0.0, 1.0], "c": [1.0, 1.0]})
+    vectors = embed_texts(["a", "b", "c"], client=client, batch_size=2)
+    assert vectors.shape == (3, 2)
+    expected_a = np.array([1.0, 0.0])
+    expected_b = np.array([0.0, 1.0])
+    assert np.allclose(vectors[0], expected_a, atol=1e-6)
+    assert np.allclose(vectors[1], expected_b, atol=1e-6)
+
+
 def test_build_dense_index_and_dense_search_returns_best_match():
     corpus = [{"id": 1, "passage": "alpha"}, {"id": 2, "passage": "beta"}]
     client = _FakeEmbeddingClient({

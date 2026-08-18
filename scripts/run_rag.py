@@ -28,10 +28,7 @@ def main():
     try:
         passages, answer = rag_query(question, top_k=args.top_k)
     except ValueError as e:
-        if "GROQ_API_KEY" in str(e) or "API_KEY" in str(e):
-            print("Error: Set GROQ_API_KEY in setup/.env – see setup/.env.example", file=sys.stderr)
-        else:
-            print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     result = {

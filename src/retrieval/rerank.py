@@ -3,6 +3,10 @@ from typing import List, Optional, Tuple
 
 import httpx
 
+from src.config.env import load_env
+
+load_env()
+
 VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank"
 VOYAGE_MODEL = "rerank-2"
 

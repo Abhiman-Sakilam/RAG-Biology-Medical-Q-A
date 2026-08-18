@@ -7,7 +7,10 @@ import faiss
 import numpy as np
 from openai import OpenAI
 
+from src.config.env import load_env
 from src.data.loaders import load_corpus
+
+load_env()
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 

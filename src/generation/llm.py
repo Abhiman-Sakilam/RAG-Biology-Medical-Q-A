@@ -1,10 +1,10 @@
 import os
-from pathlib import Path
 
-from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv(Path(__file__).resolve().parent.parent.parent / "setup" / ".env")
+from src.config.env import load_env
+
+load_env()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 

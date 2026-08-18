@@ -59,9 +59,7 @@ def query(req: QueryRequest):
     try:
         passages, answer = rag_query(req.question)
     except ValueError as e:
-        if "API_KEY" in str(e):
-            raise HTTPException(503, "Set GROQ_API_KEY in setup/.env") from e
-        raise HTTPException(500, str(e)) from e
+        raise HTTPException(503, str(e)) from e
     return QueryResponse(
         question=req.question,
         answer=answer,

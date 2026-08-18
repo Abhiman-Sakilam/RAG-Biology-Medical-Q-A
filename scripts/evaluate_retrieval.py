@@ -38,32 +38,11 @@ def evaluate_mode(
     }
 
 
-def _bm25_retrieve_fn(bm25, corpus, id_to_passage, k):
-    from src.retrieval.sparse import search
+def _retrieve_fn_from_config(r_cfg):
+    from src.pipeline.rag import retrieve_candidates
 
     def _fn(question):
-        return [pid for pid, _, _ in search(question, bm25, corpus, id_to_passage, k=k)]
-
-    return _fn
-
-
-def _hybrid_retrieve_fn(
-    bm25, corpus, id_to_passage, dense_index, k, sparse_top_n, dense_top_n, fusion_k, rerank_top_n=None
-):
-    from src.retrieval.sparse import search as bm25_search
-    from src.retrieval.dense import dense_search
-    from src.retrieval.fusion import rrf_fuse
-    from src.retrieval.rerank import rerank as voyage_rerank
-
-    def _fn(question):
-        sparse = bm25_search(question, bm25, corpus, id_to_passage, k=sparse_top_n)
-        dense = dense_search(question, dense_index, corpus, id_to_passage, k=dense_top_n)
-        fused = rrf_fuse(sparse, dense, k=fusion_k)
-        if rerank_top_n:
-            candidate_pool = fused[: max(sparse_top_n, dense_top_n)]
-            reranked = voyage_rerank(question, candidate_pool, top_n=rerank_top_n)
-            return [pid for pid, _, _ in reranked[:k]]
-        return [pid for pid, _, _ in fused[:k]]
+        return [pid for pid, _, _ in retrieve_candidates(question, r_cfg)]
 
     return _fn
 
@@ -78,29 +57,28 @@ def main():
     if args.limit:
         qa_pairs = qa_pairs[: args.limit]
 
-    from src.retrieval.sparse import build_index
-    from src.retrieval.dense import load_index as load_dense_index
+    from src.pipeline.rag import _load_config, load_indices as load_pipeline_indices
 
-    bm25, corpus, id_to_passage = build_index()
-    results = {"bm25": evaluate_mode(qa_pairs, _bm25_retrieve_fn(bm25, corpus, id_to_passage, k=args.top_k))}
+    cfg = _load_config()
+    base_r_cfg = dict(cfg.get("retrieval", {}))
+    if args.top_k:
+        base_r_cfg["top_k"] = args.top_k
 
     dense_index_path = project_root / "artifacts" / "dense_index"
-    if (dense_index_path / "index.faiss").exists():
-        dense_index = load_dense_index(dense_index_path, corpus)
-        results["hybrid"] = evaluate_mode(
-            qa_pairs,
-            _hybrid_retrieve_fn(
-                bm25, corpus, id_to_passage, dense_index,
-                k=args.top_k, sparse_top_n=20, dense_top_n=20, fusion_k=60,
-            ),
-        )
-        results["hybrid_rerank"] = evaluate_mode(
-            qa_pairs,
-            _hybrid_retrieve_fn(
-                bm25, corpus, id_to_passage, dense_index,
-                k=args.top_k, sparse_top_n=20, dense_top_n=20, fusion_k=60, rerank_top_n=args.top_k,
-            ),
-        )
+    has_dense = (dense_index_path / "index.faiss").exists()
+
+    load_pipeline_indices("hybrid" if has_dense else "bm25")
+
+    results = {}
+    bm25_cfg = {**base_r_cfg, "mode": "bm25", "rerank": False}
+    results["bm25"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(bm25_cfg))
+
+    if has_dense:
+        hybrid_cfg = {**base_r_cfg, "mode": "hybrid", "rerank": False}
+        results["hybrid"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(hybrid_cfg))
+
+        hybrid_rerank_cfg = {**base_r_cfg, "mode": "hybrid", "rerank": True}
+        results["hybrid_rerank"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(hybrid_rerank_cfg))
     else:
         print(
             "No dense index found at artifacts/dense_index — run scripts/build_embeddings.py "
