@@ -82,3 +82,24 @@ def test_rerank_stage_invoked_when_enabled(monkeypatch):
     monkeypatch.setattr(rag_module, "generate", lambda prompt, model, max_tokens, temperature: "answer")
     passages, _ = rag_module.rag_query("q?", config=_base_config(rerank=True, rerank_top_n=1))
     assert passages == [(2, "beta", 3.0)]
+
+
+def test_rerank_receives_full_candidate_pool_not_truncated(monkeypatch):
+    rag_module._bm25_state = _fixture_corpus_state()
+    rag_module._dense_state = None
+    # 25 fake candidates -- more than sparse_top_n/dense_top_n=20, to prove no
+    # extra slice is applied before candidates reach the reranker.
+    many_candidates = [(i, f"passage-{i}", float(25 - i)) for i in range(25)]
+    monkeypatch.setattr(rag_module, "bm25_search", lambda q, bm25, corpus, lut, k: many_candidates)
+    received = {}
+
+    def fake_voyage_rerank(q, candidates, top_n):
+        received["count"] = len(candidates)
+        return candidates[:top_n]
+
+    monkeypatch.setattr(rag_module, "voyage_rerank", fake_voyage_rerank)
+    monkeypatch.setattr(rag_module, "generate", lambda prompt, model, max_tokens, temperature: "answer")
+    passages, _ = rag_module.rag_query(
+        "q?", config=_base_config(rerank=True, rerank_top_n=5, sparse_top_n=20)
+    )
+    assert received["count"] == 25

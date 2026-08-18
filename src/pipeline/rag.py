@@ -103,10 +103,9 @@ def retrieve_candidates(
         candidates = sparse_results
 
     if do_rerank:
-        candidate_pool = candidates[: max(sparse_top_n, dense_top_n)]
         rerank_top_n = max(top_k, r_cfg.get("rerank_top_n", top_k))
         try:
-            reranked = voyage_rerank(question, candidate_pool, top_n=rerank_top_n)
+            reranked = voyage_rerank(question, candidates, top_n=rerank_top_n)
             return reranked[:top_k]
         except httpx.HTTPError as e:
             logger.warning("Voyage rerank failed (%s); falling back to unreranked candidates", e)
