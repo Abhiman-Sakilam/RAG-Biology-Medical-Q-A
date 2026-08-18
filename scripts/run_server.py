@@ -12,9 +12,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.pipeline.rag import rag_query
+from src.pipeline.rag import rag_query, load_indices, _load_config
 
 app = FastAPI(title="RAG API")
+_cfg = _load_config()
+
+
+@app.on_event("startup")
+def _load_indices_on_startup():
+    load_indices(mode=_cfg.get("retrieval", {}).get("mode", "bm25"))
+
+
 web_dir = project_root / "frontend" / "dist"
 if (web_dir / "index.html").exists():
     app.mount("/assets", StaticFiles(directory=str(web_dir / "assets")), name="assets")
