@@ -182,12 +182,12 @@ class TestQueryResponseModel:
 
     def test_query_response_has_citations_field(self):
         """Test that QueryResponse model includes citations field."""
-        from scripts.run_server import QueryResponse
+        from scripts.run_server import QueryResponse, CitationOut
 
         # Create a response with citations
         citations = [
-            {"marker": "[Passage 1]", "passage_id": 1, "text": "Some text", "score": 0.85},
-            {"marker": "[Passage 3]", "passage_id": 3, "text": "Other text", "score": 0.92},
+            CitationOut(marker="[Passage 1]", passage_id=1, text="Some text", score=0.85),
+            CitationOut(marker="[Passage 3]", passage_id=3, text="Other text", score=0.92),
         ]
 
         response = QueryResponse(
