@@ -128,6 +128,15 @@ def test_overlap_between_consecutive_chunks():
     assert found_overlap <= 80  # not the entire chunk duplicated
 
 
+def test_no_infinite_loop_when_threshold_below_overlap():
+    # Regression test for threshold=30, no sentence boundaries
+    corpus = [{"id": 1, "text": " ".join(f"word{i}" for i in range(120))}]
+    # Should complete without hanging
+    chunks = chunk_passages(corpus, threshold=30)
+    assert len(chunks) > 0  # At least one chunk
+    assert all(len(c["text"].split()) > 0 for c in chunks)  # No empty chunks
+
+
 def test_word_count_measured_on_whitespace_split():
     # Exactly at threshold should be kept as-is (<=), not split.
     text = " ".join(f"w{i}" for i in range(500)) + "."

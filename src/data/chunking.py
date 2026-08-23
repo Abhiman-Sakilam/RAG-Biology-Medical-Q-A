@@ -114,7 +114,11 @@ def _split_by_words(parent_id: Any, words: List[str], threshold: int) -> List[Di
 
         if end >= len(words):
             break
-        start = end - _DEFAULT_OVERLAP_WORDS
+
+        step = threshold - _DEFAULT_OVERLAP_WORDS
+        if step < 1:
+            step = 1  # Ensure we always move forward
+        start += step
 
     return chunks
 
