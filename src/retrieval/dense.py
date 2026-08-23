@@ -4,37 +4,51 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import faiss
+import httpx
 import numpy as np
-from openai import OpenAI
 
 from src.config.env import load_env
 from src.data.loaders import load_corpus
 
 load_env()
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings"
+EMBEDDING_MODEL = "voyage-3-lite"
 
 
-def _get_embedding_client() -> OpenAI:
-    api_key = os.getenv("OPENAI_API_KEY")
+def _get_api_key() -> str:
+    api_key = os.getenv("VOYAGE_API_KEY")
     if not api_key:
         raise ValueError(
-            "Set OPENAI_API_KEY in setup/.env to use hybrid retrieval (dense embeddings)"
+            "Set VOYAGE_API_KEY in setup/.env to use hybrid retrieval (dense embeddings)"
         )
-    return OpenAI(api_key=api_key)
+    return api_key
 
 
 def embed_texts(
     texts: List[str],
-    client: Optional[OpenAI] = None,
+    client: Optional[httpx.Client] = None,
     batch_size: int = 100,
 ) -> np.ndarray:
-    client = client or _get_embedding_client()
+    api_key = _get_api_key()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    owns_client = client is None
+    client = client or httpx.Client(timeout=30.0)
     vectors = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        resp = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
-        vectors.extend(item.embedding for item in resp.data)
+    try:
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            payload = {
+                "input": batch,
+                "model": EMBEDDING_MODEL,
+                "input_type": "document",
+            }
+            resp = client.post(VOYAGE_EMBEDDINGS_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            vectors.extend(item["embedding"] for item in resp.json()["data"])
+    finally:
+        if owns_client:
+            client.close()
     arr = np.array(vectors, dtype="float32")
     faiss.normalize_L2(arr)
     return arr
@@ -42,7 +56,7 @@ def embed_texts(
 
 def build_dense_index(
     corpus: List[dict] = None,
-    client: Optional[OpenAI] = None,
+    client: Optional[httpx.Client] = None,
 ) -> Tuple["faiss.Index", List[dict], dict]:
     if corpus is None:
         corpus = load_corpus()
@@ -62,7 +76,7 @@ def dense_search(
     corpus: List[dict],
     id_to_passage: dict,
     k: int = 5,
-    client: Optional[OpenAI] = None,
+    client: Optional[httpx.Client] = None,
 ) -> List[Tuple[int, str, float]]:
     q_vec = embed_texts([query], client=client)
     scores, indices = index.search(q_vec, k)

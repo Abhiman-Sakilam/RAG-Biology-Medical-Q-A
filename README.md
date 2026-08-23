@@ -43,4 +43,4 @@ Open http://localhost:8060. Dev: `cd frontend && npm run dev` → http://localho
 ## Config
 
 - `config.toml` (project root): `[retrieval]` mode (`"bm25"` | `"hybrid"`), top_k, sparse_top_n, dense_top_n, fusion_k, rerank, rerank_top_n; `[llm]` model, max_tokens, temperature
-- `setup/.env`: GROQ_API_KEY (required). Optional: GROQ_MODEL, or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI. `OPENAI_API_KEY` is also required for `mode = "hybrid"` (dense embeddings). `VOYAGE_API_KEY` is optional, required only when `rerank = true`.
+- `setup/.env`: GROQ_API_KEY (required). Optional: GROQ_MODEL, or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI. `VOYAGE_API_KEY` is required for `mode = "hybrid"` (Voyage embeddings) and/or `rerank = true` (Voyage AI handles both embeddings and reranking).

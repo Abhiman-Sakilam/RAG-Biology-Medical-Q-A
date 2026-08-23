@@ -11,23 +11,37 @@ from src.retrieval.dense import (
 )
 
 
-class _FakeEmbeddingItem:
-    def __init__(self, embedding):
-        self.embedding = embedding
+@pytest.fixture(autouse=True)
+def _voyage_api_key(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
 
 
-class _FakeEmbeddingResponse:
-    def __init__(self, embeddings):
-        self.data = [_FakeEmbeddingItem(e) for e in embeddings]
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
 
 
 class _FakeEmbeddingClient:
     def __init__(self, embedding_map):
         self.embedding_map = embedding_map
-        self.embeddings = self
+        self.calls = []
 
-    def create(self, model, input):
-        return _FakeEmbeddingResponse([self.embedding_map[text] for text in input])
+    def post(self, url, json, headers):
+        self.calls.append((url, json, headers))
+        data = [
+            {"embedding": self.embedding_map[text], "index": i}
+            for i, text in enumerate(json["input"])
+        ]
+        return _FakeResponse({"data": data})
+
+    def close(self):
+        pass
 
 
 def test_embed_texts_normalizes_vectors():
@@ -83,3 +97,9 @@ def test_load_index_raises_on_corpus_mismatch(tmp_path):
 def test_load_index_raises_when_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_index(tmp_path, [{"id": 1, "passage": "a"}])
+
+
+def test_embed_texts_raises_without_api_key(monkeypatch):
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    with pytest.raises(ValueError):
+        embed_texts(["a"])

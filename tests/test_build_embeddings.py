@@ -1,14 +1,43 @@
-from unittest import mock
+import pytest
 
 from scripts.build_embeddings import build_and_persist
 
 
+@pytest.fixture(autouse=True)
+def _voyage_api_key(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    def __init__(self):
+        self.calls = []
+
+    def post(self, url, json, headers):
+        self.calls.append((url, json, headers))
+        embeddings = {"alpha": [1.0, 0.0], "beta": [0.0, 1.0]}
+        data = [
+            {"embedding": embeddings[text], "index": i}
+            for i, text in enumerate(json["input"])
+        ]
+        return _FakeResponse({"data": data})
+
+    def close(self):
+        pass
+
+
 def _fake_client():
-    client = mock.Mock()
-    client.embeddings.create.return_value = mock.Mock(
-        data=[mock.Mock(embedding=[1.0, 0.0]), mock.Mock(embedding=[0.0, 1.0])]
-    )
-    return client
+    return _FakeClient()
 
 
 def test_build_and_persist_creates_index(tmp_path):
@@ -26,4 +55,4 @@ def test_build_and_persist_skips_when_hash_matches(tmp_path):
     client = _fake_client()
     built = build_and_persist([{"id": 1, "passage": "alpha"}], tmp_path, "hash-v1", client=client)
     assert built is False
-    client.embeddings.create.assert_not_called()
+    assert client.calls == []

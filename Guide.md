@@ -8,7 +8,7 @@ This guide explains what the project does, what technologies and patterns are us
 
 This is a **RAG (Retrieval-Augmented Generation)** application for **biology/medical Q&A**. It:
 
-1. **Retrieves** relevant text passages from a corpus using **BM25** (default) or **hybrid retrieval** — BM25 + dense embeddings (OpenAI) fused via Reciprocal Rank Fusion, with optional **Voyage AI reranking** — as an opt-in mode set in config
+1. **Retrieves** relevant text passages from a corpus using **BM25** (default) or **hybrid retrieval** — BM25 + dense embeddings (Voyage) fused via Reciprocal Rank Fusion, with optional **Voyage AI reranking** — as an opt-in mode set in config
 2. **Prompts** an **LLM** (Groq or OpenAI) with those passages and the user question
 3. **Returns** an answer plus the supporting passages
 
@@ -36,9 +36,9 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | An opt-in retrieval mode (`[retrieval] mode = "hybrid"`) that combines BM25 with dense (embedding-based) retrieval, fuses the two rankings, and optionally reranks the fused candidates. |
 | **Why** | Dense embeddings catch semantically related passages that don't share exact keywords with the query; combining with BM25 (via fusion) tends to beat either alone. Reranking with a cross-encoder-style model further sharpens the final top-k. |
-| **How** | `src/retrieval/dense.py`: `build_dense_index()`/`embed_texts()` call OpenAI's `text-embedding-3-small` to embed the corpus into a FAISS `IndexFlatIP`; `dense_search()` embeds the query and searches the index. The index is built and persisted once via `scripts/build_embeddings.py` (into `artifacts/dense_index/`) rather than rebuilt per request. `src/retrieval/fusion.py`: `rrf_fuse(sparse_results, dense_results, k)` combines both rankings using Reciprocal Rank Fusion. `src/retrieval/rerank.py`: `rerank(query, candidates, top_n)` calls the Voyage AI rerank API (`rerank-2` model) to re-score and reorder the fused candidate pool, used only when `[retrieval] rerank = true`. All of this is orchestrated by `src.pipeline.rag.retrieve_candidates()` (see below), which is the single implementation shared by the live pipeline and the evaluation harness. |
+| **How** | `src/retrieval/dense.py`: `build_dense_index()`/`embed_texts()` call Voyage AI's `voyage-3-lite` embeddings API (via direct `httpx` calls) to embed the corpus into a FAISS `IndexFlatIP`; `dense_search()` embeds the query and searches the index. The index is built and persisted once via `scripts/build_embeddings.py` (into `artifacts/dense_index/`) rather than rebuilt per request. `src/retrieval/fusion.py`: `rrf_fuse(sparse_results, dense_results, k)` combines both rankings using Reciprocal Rank Fusion. `src/retrieval/rerank.py`: `rerank(query, candidates, top_n)` calls the Voyage AI rerank API (`rerank-2` model) to re-score and reorder the fused candidate pool, used only when `[retrieval] rerank = true`. Voyage AI handles both embeddings and reranking, so hybrid mode needs only a single API key. All of this is orchestrated by `src.pipeline.rag.retrieve_candidates()` (see below), which is the single implementation shared by the live pipeline and the evaluation harness. |
 
-**Dependencies:** `faiss-cpu`, `numpy`, `httpx` (plus `openai` for embeddings). Requires `OPENAI_API_KEY` (hybrid mode) and, only when `rerank = true`, `VOYAGE_API_KEY`.
+**Dependencies:** `faiss-cpu`, `numpy`, `httpx`. Requires `VOYAGE_API_KEY` (used for both hybrid mode's embeddings and, when `rerank = true`, reranking).
 
 ---
 
@@ -48,7 +48,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | Uses the `openai` Python client to call Groq (default) or OpenAI. |
 | **Why** | To generate a single, concise answer given the retrieved context. |
-| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). `.env` loading is centralized in `src/config/env.py` (`load_env()`), called at import time by `llm.py`, `src/retrieval/dense.py`, and `src/retrieval/rerank.py`, so `setup/.env` is loaded regardless of which entry point/script runs first. `OPENAI_API_KEY` is also required (separately from its use as an LLM key) for hybrid mode's embeddings, and `VOYAGE_API_KEY` is required only when `[retrieval] rerank = true`. |
+| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). `.env` loading is centralized in `src/config/env.py` (`load_env()`), called at import time by `llm.py`, `src/retrieval/dense.py`, and `src/retrieval/rerank.py`, so `setup/.env` is loaded regardless of which entry point/script runs first. `VOYAGE_API_KEY` is required for hybrid mode's embeddings and, separately, whenever `[retrieval] rerank = true` — Voyage AI handles both embeddings and reranking. |
 
 **Dependency:** `openai`, `python-dotenv`
 
