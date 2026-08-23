@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.pipeline.rag import rag_query, load_indices, _load_config
+from src.pipeline.rag import rag_query, rag_query_full, load_indices, _load_config
 
 app = FastAPI(title="RAG API")
 _cfg = _load_config()
@@ -38,10 +38,20 @@ class PassageOut(BaseModel):
     score: float
 
 
+class CitationOut(BaseModel):
+    marker: str
+    passage_id: int
+    text: str
+    score: float
+
+
 class QueryResponse(BaseModel):
     question: str
     answer: str
     passages: list[PassageOut]
+    citations: list[CitationOut] = []
+    groundedness_score: float | None = None
+    groundedness_flagged: bool = False
 
 
 @app.get("/")
@@ -57,13 +67,31 @@ def query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(400, "question must be non-empty")
     try:
-        passages, answer = rag_query(req.question)
+        result = rag_query_full(req.question)
     except ValueError as e:
         raise HTTPException(503, str(e)) from e
+
+    # Build citations list from result
+    citations = [
+        CitationOut(
+            marker=c["marker"],
+            passage_id=c["passage_id"],
+            text=c["text"],
+            score=round(c["score"], 4),
+        )
+        for c in result.get("citations", [])
+    ]
+
     return QueryResponse(
         question=req.question,
-        answer=answer,
-        passages=[PassageOut(passage_id=p[0], passage=p[1], score=round(p[2], 4)) for p in passages],
+        answer=result["answer"],
+        passages=[
+            PassageOut(passage_id=p[0], passage=p[1], score=round(p[2], 4))
+            for p in result["passages"]
+        ],
+        citations=citations,
+        groundedness_score=result.get("groundedness_score"),
+        groundedness_flagged=result.get("groundedness_flagged", False),
     )
 
 

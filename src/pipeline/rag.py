@@ -16,7 +16,8 @@ from src.retrieval.rerank import rerank as voyage_rerank
 from src.prompts.formatter import format_passages_as_context
 from src.prompts.templates import build_rag_prompt
 from src.generation.llm import generate, _get_client
-from src.generation.parser import parse_answer
+from src.generation.parser import parse_answer, extract_and_validate_citations
+from src.generation.groundedness import score_groundedness
 from src.query.rewrite import rewrite_query
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
         },
         "llm": {"model": "llama-3.3-70b-versatile", "max_tokens": 512, "temperature": 0.2},
         "rewrite": {"enabled": False},
+        "citation": {"enforce": False},
         "guardrail": {"groundedness_enabled": False, "groundedness_threshold": 0.5},
     }
     if not path.exists():
@@ -50,6 +52,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
         "retrieval": {**defaults["retrieval"], **(data.get("retrieval") or {})},
         "llm": {**defaults["llm"], **(data.get("llm") or {})},
         "rewrite": {**defaults["rewrite"], **(data.get("rewrite") or {})},
+        "citation": {**defaults["citation"], **(data.get("citation") or {})},
         "guardrail": {**defaults["guardrail"], **(data.get("guardrail") or {})},
     }
 
@@ -144,12 +147,38 @@ def rag_query(
     max_tokens: int = None,
     config: Dict[str, Any] = None,
 ) -> Tuple[List[Tuple[Union[int, str], str, float]], str]:
+    """Run the full RAG pipeline: retrieve, generate, extract citations, score groundedness.
+
+    Returns (passages, answer) tuple for backward compatibility.
+    For full results including citations and groundedness, use rag_query_full().
+    """
+    result = rag_query_full(question, top_k, max_tokens, config)
+    return result["passages"], result["answer"]
+
+
+def rag_query_full(
+    question: str,
+    top_k: int = None,
+    max_tokens: int = None,
+    config: Dict[str, Any] = None,
+) -> Dict[str, Any]:
+    """Run the full RAG pipeline and return complete results including citations and groundedness.
+
+    Returns:
+        Dict with keys:
+        - passages: List of (passage_id, text, score) tuples
+        - answer: Generated answer text
+        - citations: List of {marker, passage_id, text, score} dicts
+        - groundedness_score: Float 0-1 or None if not scored
+        - groundedness_flagged: Bool indicating if score is below threshold
+    """
     cfg = config or _load_config()
     r_cfg = dict(cfg.get("retrieval", {}))
     if top_k is not None:
         r_cfg["top_k"] = top_k
     llm_cfg = cfg.get("llm", {})
     rewrite_cfg = cfg.get("rewrite", {})
+    guardrail_cfg = cfg.get("guardrail", {})
     max_tokens = max_tokens or llm_cfg.get("max_tokens", 512)
     temperature = llm_cfg.get("temperature", 0.2)
     model = llm_cfg.get("model", "llama-3.3-70b-versatile")
@@ -170,4 +199,43 @@ def rag_query(
     prompt = build_rag_prompt(context=context, question=question)
     raw = generate(prompt, model=model, max_tokens=max_tokens, temperature=temperature)
     answer = parse_answer(raw)
-    return passages, answer
+
+    # Extract and validate citations
+    passage_ids_set = {p[0] for p in passages}
+    cleaned_answer, citations = extract_and_validate_citations(answer, passage_ids_set)
+
+    # Build citations with full passage information
+    citations_with_text = []
+    passages_by_id = {p[0]: p for p in passages}
+    for marker, passage_id in citations:
+        if passage_id in passages_by_id:
+            _, text, score = passages_by_id[passage_id]
+            citations_with_text.append({
+                "marker": marker,
+                "passage_id": passage_id,
+                "text": text,
+                "score": score,
+            })
+
+    # Score groundedness if enabled
+    groundedness_score = None
+    groundedness_flagged = False
+    if guardrail_cfg.get("groundedness_enabled", False):
+        try:
+            llm_client = _get_client()
+            groundedness_score = score_groundedness(
+                cleaned_answer, citations, llm_client, model=model
+            )
+            threshold = guardrail_cfg.get("groundedness_threshold", 0.5)
+            groundedness_flagged = groundedness_score < threshold
+        except Exception as e:
+            logger.warning("Groundedness scoring failed (%s); proceeding without score", e)
+            groundedness_score = None
+
+    return {
+        "passages": passages,
+        "answer": cleaned_answer,
+        "citations": citations_with_text,
+        "groundedness_score": groundedness_score,
+        "groundedness_flagged": groundedness_flagged,
+    }

@@ -29,3 +29,10 @@ temperature = 0.2
 
 [rewrite]
 enabled = false        # Enable query rewriting with HyDE + keyword expansion
+
+[citation]
+enforce = false        # Enable citation enforcement (citations required in answers)
+
+[guardrail]
+groundedness_enabled = false        # Enable groundedness scoring (opt-in)
+groundedness_threshold = 0.5        # Flag answers below this threshold
