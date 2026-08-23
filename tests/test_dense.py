@@ -55,7 +55,8 @@ def test_embed_texts_normalizes_vectors():
     assert abs(norm - 1.0) < 1e-6
 
 
-def test_embed_texts_preserves_order_across_multiple_batches():
+def test_embed_texts_preserves_order_across_multiple_batches(monkeypatch):
+    monkeypatch.setattr("src.retrieval.dense.time.sleep", lambda _: None)
     client = _FakeEmbeddingClient({"a": [1.0, 0.0], "b": [0.0, 1.0], "c": [1.0, 1.0]})
     vectors = embed_texts(["a", "b", "c"], client=client, batch_size=2)
     assert vectors.shape == (3, 2)
@@ -183,5 +184,7 @@ def test_embed_texts_sleeps_when_tpm_safety_margin_exceeded(monkeypatch):
 
     vectors = embed_texts(["a", "b"], client=client, batch_size=1)
 
-    assert sleep_calls == [60.0]
+    # 2s inter-batch delay after the first batch, then the TPM safety-margin
+    # sleep before the second batch is sent.
+    assert sleep_calls == [2, 60.0]
     assert vectors.shape == (2, 2)

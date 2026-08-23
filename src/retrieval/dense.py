@@ -63,7 +63,7 @@ def _post_embeddings_with_retry(client: httpx.Client, headers: dict, payload: di
 def embed_texts(
     texts: List[str],
     client: Optional[httpx.Client] = None,
-    batch_size: int = 100,
+    batch_size: int = 10,
 ) -> np.ndarray:
     api_key = _get_api_key()
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -97,6 +97,10 @@ def embed_texts(
             data = _post_embeddings_with_retry(client, headers, payload)
             vectors.extend(item["embedding"] for item in data["data"])
             tokens_this_minute += data.get("usage", {}).get("total_tokens", 0)
+
+            # Add delay between batches to respect rate limits
+            if i + batch_size < len(texts):  # Not the last batch
+                time.sleep(2)
     finally:
         if owns_client:
             client.close()
