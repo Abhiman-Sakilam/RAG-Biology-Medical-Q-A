@@ -40,6 +40,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
         },
         "llm": {"model": "llama-3.3-70b-versatile", "max_tokens": 512, "temperature": 0.2},
         "rewrite": {"enabled": False},
+        "guardrail": {"groundedness_enabled": False, "groundedness_threshold": 0.5},
     }
     if not path.exists():
         return defaults
@@ -49,6 +50,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
         "retrieval": {**defaults["retrieval"], **(data.get("retrieval") or {})},
         "llm": {**defaults["llm"], **(data.get("llm") or {})},
         "rewrite": {**defaults["rewrite"], **(data.get("rewrite") or {})},
+        "guardrail": {**defaults["guardrail"], **(data.get("guardrail") or {})},
     }
 
 
