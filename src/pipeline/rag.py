@@ -15,8 +15,9 @@ from src.retrieval.fusion import rrf_fuse
 from src.retrieval.rerank import rerank as voyage_rerank
 from src.prompts.formatter import format_passages_as_context
 from src.prompts.templates import build_rag_prompt
-from src.generation.llm import generate
+from src.generation.llm import generate, _get_client
 from src.generation.parser import parse_answer
+from src.query.rewrite import rewrite_query
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
             "rerank_top_n": 5,
         },
         "llm": {"model": "llama-3.3-70b-versatile", "max_tokens": 512, "temperature": 0.2},
+        "rewrite": {"enabled": False},
     }
     if not path.exists():
         return defaults
@@ -46,6 +48,7 @@ def _load_config(path: Path = None) -> Dict[str, Any]:
     return {
         "retrieval": {**defaults["retrieval"], **(data.get("retrieval") or {})},
         "llm": {**defaults["llm"], **(data.get("llm") or {})},
+        "rewrite": {**defaults["rewrite"], **(data.get("rewrite") or {})},
     }
 
 
@@ -77,10 +80,18 @@ def _ensure_loaded(mode: str) -> None:
 def retrieve_candidates(
     question: str,
     r_cfg: Dict[str, Any],
+    hypothesis: str = None,
+    expansions: str = None,
 ) -> List[Tuple[Union[int, str], str, float]]:
     """Run BM25 (+ dense + fusion + optional rerank per r_cfg) and return the
     final top_k candidates. Shared by rag_query and scripts/evaluate_retrieval.py
     so both use the exact same retrieval logic.
+
+    Args:
+        question: The original user question.
+        r_cfg: Retrieval configuration.
+        hypothesis: Optional hypothetical passage from query rewriting.
+        expansions: Optional keyword expansions from query rewriting.
 
     Returns list of (chunk_id, text, score) tuples where chunk_id may be an int
     (non-chunked passage) or string (chunked id like "parent::0").
@@ -94,13 +105,20 @@ def retrieve_candidates(
     _ensure_loaded(mode)
     bm25, corpus, id_to_passage = _bm25_state
 
+    # Use hypothesis for dense search if available, original question for sparse search
+    dense_query = hypothesis if hypothesis else question
+    # Append expansions to the sparse query if available
+    sparse_query = question
+    if expansions:
+        sparse_query = f"{question} {expansions}"
+
     fetch_k = sparse_top_n if (mode == "hybrid" or do_rerank) else top_k
-    sparse_results = bm25_search(question, bm25, corpus, id_to_passage, k=fetch_k)
+    sparse_results = bm25_search(sparse_query, bm25, corpus, id_to_passage, k=fetch_k)
 
     if mode == "hybrid" and _dense_state is not None:
         dense_index, d_corpus, d_id_to_passage = _dense_state
         dense_results = dense_search(
-            question, dense_index, d_corpus, d_id_to_passage, k=dense_top_n
+            dense_query, dense_index, d_corpus, d_id_to_passage, k=dense_top_n
         )
         candidates = rrf_fuse(sparse_results, dense_results, k=r_cfg.get("fusion_k", 60))
     else:
@@ -129,11 +147,22 @@ def rag_query(
     if top_k is not None:
         r_cfg["top_k"] = top_k
     llm_cfg = cfg.get("llm", {})
+    rewrite_cfg = cfg.get("rewrite", {})
     max_tokens = max_tokens or llm_cfg.get("max_tokens", 512)
     temperature = llm_cfg.get("temperature", 0.2)
     model = llm_cfg.get("model", "llama-3.3-70b-versatile")
 
-    passages = retrieve_candidates(question, r_cfg)
+    # Perform query rewriting if enabled
+    hypothesis = None
+    expansions = None
+    if rewrite_cfg.get("enabled", False):
+        try:
+            llm_client = _get_client()
+            hypothesis, expansions = rewrite_query(question, llm_client)
+        except Exception as e:
+            logger.warning("Query rewriting failed (%s); proceeding without rewrite", e)
+
+    passages = retrieve_candidates(question, r_cfg, hypothesis=hypothesis, expansions=expansions)
 
     context = format_passages_as_context(passages)
     prompt = build_rag_prompt(context=context, question=question)
