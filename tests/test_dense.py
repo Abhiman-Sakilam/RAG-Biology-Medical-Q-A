@@ -1,3 +1,6 @@
+from unittest.mock import Mock
+
+import httpx
 import numpy as np
 import pytest
 import faiss
@@ -103,3 +106,82 @@ def test_embed_texts_raises_without_api_key(monkeypatch):
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     with pytest.raises(ValueError):
         embed_texts(["a"])
+
+
+def test_embed_texts_retries_once_on_429(monkeypatch):
+    monkeypatch.setattr("src.retrieval.dense.time.sleep", lambda _: None)
+
+    rate_limited_response = Mock()
+    rate_limited_response.status_code = 429
+    rate_limit_error = httpx.HTTPStatusError(
+        "rate limited", request=Mock(), response=rate_limited_response
+    )
+
+    first_response = Mock()
+    first_response.raise_for_status.side_effect = rate_limit_error
+
+    success_response = Mock()
+    success_response.raise_for_status = Mock()
+    success_response.json.return_value = {
+        "data": [{"embedding": [1.0, 0.0], "index": 0}],
+        "usage": {"total_tokens": 5},
+    }
+
+    client = Mock()
+    client.post.side_effect = [first_response, success_response]
+
+    vectors = embed_texts(["a"], client=client)
+
+    assert client.post.call_count == 2
+    assert vectors.shape == (1, 2)
+
+
+def test_embed_texts_raises_after_exhausting_retries(monkeypatch):
+    monkeypatch.setattr("src.retrieval.dense.time.sleep", lambda _: None)
+
+    rate_limited_response = Mock()
+    rate_limited_response.status_code = 429
+    rate_limit_error = httpx.HTTPStatusError(
+        "rate limited", request=Mock(), response=rate_limited_response
+    )
+
+    always_rate_limited = Mock()
+    always_rate_limited.raise_for_status.side_effect = rate_limit_error
+
+    client = Mock()
+    client.post.return_value = always_rate_limited
+
+    with pytest.raises(httpx.HTTPStatusError):
+        embed_texts(["a"], client=client)
+
+    assert client.post.call_count == 3
+
+
+def test_embed_texts_sleeps_when_tpm_safety_margin_exceeded(monkeypatch):
+    sleep_calls = []
+    monkeypatch.setattr("src.retrieval.dense.time.sleep", sleep_calls.append)
+
+    # Keep elapsed time within the same "minute" so the safety-margin branch
+    # is the one that triggers the sleep.
+    monkeypatch.setattr("src.retrieval.dense.time.monotonic", lambda: 0.0)
+
+    response_a = Mock()
+    response_a.raise_for_status = Mock()
+    response_a.json.return_value = {
+        "data": [{"embedding": [1.0, 0.0], "index": 0}],
+        "usage": {"total_tokens": 9500},
+    }
+    response_b = Mock()
+    response_b.raise_for_status = Mock()
+    response_b.json.return_value = {
+        "data": [{"embedding": [0.0, 1.0], "index": 0}],
+        "usage": {"total_tokens": 5},
+    }
+
+    client = Mock()
+    client.post.side_effect = [response_a, response_b]
+
+    vectors = embed_texts(["a", "b"], client=client, batch_size=1)
+
+    assert sleep_calls == [60.0]
+    assert vectors.shape == (2, 2)

@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -12,8 +14,18 @@ from src.data.loaders import load_corpus
 
 load_env()
 
+logger = logging.getLogger(__name__)
+
 VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings"
 EMBEDDING_MODEL = "voyage-3-lite"
+
+# Voyage enforces a 10,000 tokens-per-minute limit on this endpoint. We pause
+# once accumulated usage crosses a safety margin below that ceiling, and we
+# retry a handful of times if we still get rate-limited.
+VOYAGE_TPM_LIMIT = 10_000
+VOYAGE_TPM_SAFETY_MARGIN = 9_000
+MAX_RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_RETRY_BACKOFF_SECONDS = 5
 
 
 def _get_api_key() -> str:
@@ -23,6 +35,29 @@ def _get_api_key() -> str:
             "Set VOYAGE_API_KEY in setup/.env to use hybrid retrieval (dense embeddings)"
         )
     return api_key
+
+
+def _post_embeddings_with_retry(client: httpx.Client, headers: dict, payload: dict) -> dict:
+    """POST a single embeddings batch, retrying on 429s with a backoff sleep."""
+    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+        try:
+            resp = client.post(VOYAGE_EMBEDDINGS_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            is_rate_limited = e.response.status_code == 429
+            if is_rate_limited and attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                wait_time = RATE_LIMIT_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                logger.warning(
+                    "Voyage API rate limited (429); retrying in %ds (attempt %d/%d)",
+                    wait_time,
+                    attempt + 1,
+                    MAX_RATE_LIMIT_RETRIES,
+                )
+                time.sleep(wait_time)
+            else:
+                raise
+    raise RuntimeError("unreachable")  # loop always returns or raises
 
 
 def embed_texts(
@@ -35,6 +70,8 @@ def embed_texts(
     owns_client = client is None
     client = client or httpx.Client(timeout=30.0)
     vectors = []
+    tokens_this_minute = 0
+    minute_start = time.monotonic()
     try:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
@@ -43,9 +80,23 @@ def embed_texts(
                 "model": EMBEDDING_MODEL,
                 "input_type": "document",
             }
-            resp = client.post(VOYAGE_EMBEDDINGS_URL, json=payload, headers=headers)
-            resp.raise_for_status()
-            vectors.extend(item["embedding"] for item in resp.json()["data"])
+
+            elapsed = time.monotonic() - minute_start
+            if tokens_this_minute >= VOYAGE_TPM_SAFETY_MARGIN and elapsed < 60:
+                sleep_time = 60 - elapsed
+                logger.warning(
+                    "Approaching Voyage TPM limit (%d tokens used this minute); "
+                    "sleeping %.1fs",
+                    tokens_this_minute,
+                    sleep_time,
+                )
+                time.sleep(sleep_time)
+                tokens_this_minute = 0
+                minute_start = time.monotonic()
+
+            data = _post_embeddings_with_retry(client, headers, payload)
+            vectors.extend(item["embedding"] for item in data["data"])
+            tokens_this_minute += data.get("usage", {}).get("total_tokens", 0)
     finally:
         if owns_client:
             client.close()
