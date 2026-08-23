@@ -1,6 +1,6 @@
 # RAG
 
-Retrieval-augmented Q&A over biology and medical literature: BM25 retrieval (default) — with optional hybrid retrieval (BM25 + dense embeddings + Voyage AI reranking) — + LLM (Groq or OpenAI). Ask questions and get answers grounded in the corpus via CLI, web UI, or Docker.
+Retrieval-augmented Q&A over biology and medical literature: BM25 retrieval (default) — with optional hybrid retrieval (BM25 + OpenRouter LFM2.5 embeddings + OpenRouter NVIDIA Nemotron reranking) — + LLM (Groq or OpenAI). Ask questions and get answers grounded in the corpus via CLI, web UI, or Docker.
 
 ## Setup
 
@@ -43,4 +43,4 @@ Open http://localhost:8060. Dev: `cd frontend && npm run dev` → http://localho
 ## Config
 
 - `config.toml` (project root): `[retrieval]` mode (`"bm25"` | `"hybrid"`), top_k, sparse_top_n, dense_top_n, fusion_k, rerank, rerank_top_n; `[llm]` model, max_tokens, temperature
-- `setup/.env`: GROQ_API_KEY (required). Optional: GROQ_MODEL, or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI. `VOYAGE_API_KEY` is required for `mode = "hybrid"` (Voyage embeddings) and/or `rerank = true` (Voyage AI handles both embeddings and reranking).
+- `setup/.env`: GROQ_API_KEY (required). Optional: GROQ_MODEL, or OPENAI_API_KEY + OPENAI_BASE_URL for OpenAI. `OPENROUTER_API_KEY` is required for `mode = "hybrid"` (OpenRouter's free LFM2.5-Embedding-350M embeddings) and/or `rerank = true` (OpenRouter's free NVIDIA Nemotron reranking model).

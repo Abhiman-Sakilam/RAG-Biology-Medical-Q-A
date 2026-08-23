@@ -15,8 +15,8 @@ from src.retrieval.dense import (
 
 
 @pytest.fixture(autouse=True)
-def _voyage_api_key(monkeypatch):
-    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+def _openrouter_api_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
 
 class _FakeResponse:
@@ -35,13 +35,13 @@ class _FakeEmbeddingClient:
         self.embedding_map = embedding_map
         self.calls = []
 
-    def post(self, url, json, headers):
-        self.calls.append((url, json, headers))
+    def post(self, url, json):
+        self.calls.append((url, json))
         data = [
             {"embedding": self.embedding_map[text], "index": i}
             for i, text in enumerate(json["input"])
         ]
-        return _FakeResponse({"data": data})
+        return _FakeResponse({"data": data, "usage": {"prompt_tokens": 0}})
 
     def close(self):
         pass
@@ -104,7 +104,7 @@ def test_load_index_raises_when_missing(tmp_path):
 
 
 def test_embed_texts_raises_without_api_key(monkeypatch):
-    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(ValueError):
         embed_texts(["a"])
 
@@ -125,7 +125,7 @@ def test_embed_texts_retries_once_on_429(monkeypatch):
     success_response.raise_for_status = Mock()
     success_response.json.return_value = {
         "data": [{"embedding": [1.0, 0.0], "index": 0}],
-        "usage": {"total_tokens": 5},
+        "usage": {"prompt_tokens": 5},
     }
 
     client = Mock()
@@ -170,13 +170,13 @@ def test_embed_texts_sleeps_when_tpm_safety_margin_exceeded(monkeypatch):
     response_a.raise_for_status = Mock()
     response_a.json.return_value = {
         "data": [{"embedding": [1.0, 0.0], "index": 0}],
-        "usage": {"total_tokens": 9500},
+        "usage": {"prompt_tokens": 9500},
     }
     response_b = Mock()
     response_b.raise_for_status = Mock()
     response_b.json.return_value = {
         "data": [{"embedding": [0.0, 1.0], "index": 0}],
-        "usage": {"total_tokens": 5},
+        "usage": {"prompt_tokens": 5},
     }
 
     client = Mock()

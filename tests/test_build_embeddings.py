@@ -4,8 +4,8 @@ from scripts.build_embeddings import build_and_persist
 
 
 @pytest.fixture(autouse=True)
-def _voyage_api_key(monkeypatch):
-    monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+def _openrouter_api_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
 
 class _FakeResponse:
@@ -23,14 +23,14 @@ class _FakeClient:
     def __init__(self):
         self.calls = []
 
-    def post(self, url, json, headers):
-        self.calls.append((url, json, headers))
+    def post(self, url, json):
+        self.calls.append((url, json))
         embeddings = {"alpha": [1.0, 0.0], "beta": [0.0, 1.0]}
         data = [
             {"embedding": embeddings[text], "index": i}
             for i, text in enumerate(json["input"])
         ]
-        return _FakeResponse({"data": data})
+        return _FakeResponse({"data": data, "usage": {"prompt_tokens": 0}})
 
     def close(self):
         pass

@@ -8,7 +8,7 @@ This guide explains what the project does, what technologies and patterns are us
 
 This is a **RAG (Retrieval-Augmented Generation)** application for **biology/medical Q&A**. It:
 
-1. **Retrieves** relevant text passages from a corpus using **BM25** (default) or **hybrid retrieval** — BM25 + dense embeddings (Voyage) fused via Reciprocal Rank Fusion, with optional **Voyage AI reranking** — as an opt-in mode set in config
+1. **Retrieves** relevant text passages from a corpus using **BM25** (default) or **hybrid retrieval** — BM25 + OpenRouter LFM2.5 embeddings fused via Reciprocal Rank Fusion, with optional **OpenRouter NVIDIA Nemotron reranking** — as an opt-in mode set in config
 2. **Prompts** an **LLM** (Groq or OpenAI) with those passages and the user question
 3. **Returns** an answer plus the supporting passages
 
@@ -36,9 +36,9 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | An opt-in retrieval mode (`[retrieval] mode = "hybrid"`) that combines BM25 with dense (embedding-based) retrieval, fuses the two rankings, and optionally reranks the fused candidates. |
 | **Why** | Dense embeddings catch semantically related passages that don't share exact keywords with the query; combining with BM25 (via fusion) tends to beat either alone. Reranking with a cross-encoder-style model further sharpens the final top-k. |
-| **How** | `src/retrieval/dense.py`: `build_dense_index()`/`embed_texts()` call Voyage AI's `voyage-3-lite` embeddings API (via direct `httpx` calls) to embed the corpus into a FAISS `IndexFlatIP`; `dense_search()` embeds the query and searches the index. The index is built and persisted once via `scripts/build_embeddings.py` (into `artifacts/dense_index/`) rather than rebuilt per request. `src/retrieval/fusion.py`: `rrf_fuse(sparse_results, dense_results, k)` combines both rankings using Reciprocal Rank Fusion. `src/retrieval/rerank.py`: `rerank(query, candidates, top_n)` calls the Voyage AI rerank API (`rerank-2` model) to re-score and reorder the fused candidate pool, used only when `[retrieval] rerank = true`. Voyage AI handles both embeddings and reranking, so hybrid mode needs only a single API key. All of this is orchestrated by `src.pipeline.rag.retrieve_candidates()` (see below), which is the single implementation shared by the live pipeline and the evaluation harness. |
+| **How** | `src/retrieval/dense.py`: `build_dense_index()`/`embed_texts()` call Voyage AI's `voyage-3-lite` embeddings API (via direct `httpx` calls) to embed the corpus into a FAISS `IndexFlatIP`; `dense_search()` embeds the query and searches the index. The index is built and persisted once via `scripts/build_embeddings.py` (into `artifacts/dense_index/`) rather than rebuilt per request. `src/retrieval/fusion.py`: `rrf_fuse(sparse_results, dense_results, k)` combines both rankings using Reciprocal Rank Fusion. `src/retrieval/rerank.py`: `rerank(query, candidates, top_n)` calls OpenRouter's free NVIDIA Nemotron reranking model (`nvidia/llama-nemotron-rerank-vl-1b-v2:free`, via the OpenRouter completions API) to re-score and reorder the fused candidate pool, used only when `[retrieval] rerank = true`. Voyage AI handles embeddings and OpenRouter handles reranking — hybrid mode with reranking enabled needs both `VOYAGE_API_KEY` and `OPENROUTER_API_KEY`. All of this is orchestrated by `src.pipeline.rag.retrieve_candidates()` (see below), which is the single implementation shared by the live pipeline and the evaluation harness. |
 
-**Dependencies:** `faiss-cpu`, `numpy`, `httpx`. Requires `VOYAGE_API_KEY` (used for both hybrid mode's embeddings and, when `rerank = true`, reranking).
+**Dependencies:** `faiss-cpu`, `numpy`, `httpx`. Requires `VOYAGE_API_KEY` for hybrid mode's embeddings, and `OPENROUTER_API_KEY` when `rerank = true`.
 
 ---
 
@@ -48,7 +48,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | Uses the `openai` Python client to call Groq (default) or OpenAI. |
 | **Why** | To generate a single, concise answer given the retrieved context. |
-| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). `.env` loading is centralized in `src/config/env.py` (`load_env()`), called at import time by `llm.py`, `src/retrieval/dense.py`, and `src/retrieval/rerank.py`, so `setup/.env` is loaded regardless of which entry point/script runs first. `VOYAGE_API_KEY` is required for hybrid mode's embeddings and, separately, whenever `[retrieval] rerank = true` — Voyage AI handles both embeddings and reranking. |
+| **How** | API key is read from `setup/.env` (`GROQ_API_KEY` or `OPENAI_API_KEY`). `generate(prompt, model, max_tokens, temperature)` calls `client.chat.completions.create(...)` with one user message. Model and params can be overridden in `config.toml` or env (e.g. `GROQ_MODEL`). `.env` loading is centralized in `src/config/env.py` (`load_env()`), called at import time by `llm.py`, `src/retrieval/dense.py`, and `src/retrieval/rerank.py`, so `setup/.env` is loaded regardless of which entry point/script runs first. `VOYAGE_API_KEY` is required for hybrid mode's embeddings, and `OPENROUTER_API_KEY` is required, separately, whenever `[retrieval] rerank = true`. |
 
 **Dependency:** `openai`, `python-dotenv`
 
@@ -60,7 +60,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | TOML file with `[retrieval]` and `[llm]` sections. |
 | **Why** | Single place for retrieval mode/params, model, max_tokens, temperature without code changes. |
-| **How** | `src/pipeline/rag.py` uses `tomllib`/`tomli` to load `config.toml` at project root and merge with defaults. `[retrieval]` keys: `mode` (`"bm25"` or `"hybrid"`), `top_k` (final passages returned), `sparse_top_n`/`dense_top_n` (candidates fetched from each retriever before fusion), `fusion_k` (RRF constant), `rerank` (enable Voyage reranking), `rerank_top_n` (candidates kept after reranking, before the final `top_k` cut). `[llm]` keys: `model`, `max_tokens`, `temperature`. |
+| **How** | `src/pipeline/rag.py` uses `tomllib`/`tomli` to load `config.toml` at project root and merge with defaults. `[retrieval]` keys: `mode` (`"bm25"` or `"hybrid"`), `top_k` (final passages returned), `sparse_top_n`/`dense_top_n` (candidates fetched from each retriever before fusion), `fusion_k` (RRF constant), `rerank` (enable OpenRouter NVIDIA Nemotron reranking), `rerank_top_n` (candidates kept after reranking, before the final `top_k` cut). `[llm]` keys: `model`, `max_tokens`, `temperature`. |
 
 ---
 
@@ -100,7 +100,7 @@ You can run it via **CLI**, **Web UI**, or **Docker**.
 |---|---|
 | **What** | Orchestrates retrieval → context → prompt → LLM → parse. |
 | **Why** | Single entry point for “ask a question, get answer + passages.” |
-| **How** | Loads config; `load_indices(mode)` builds/loads the BM25 index (and, in hybrid mode, the persisted dense index) once at process startup, and `_ensure_loaded(mode)` lazily loads them on first use otherwise. `retrieve_candidates(question, r_cfg)` runs BM25 (+ dense + RRF fusion + optional Voyage rerank, per `r_cfg`) and returns the final top-k candidates — this is the single retrieval implementation shared by `rag_query()` and `scripts/evaluate_retrieval.py`, so the eval harness always measures exactly what the live pipeline does. `rag_query(question, top_k=..., config=...)` runs: `retrieve_candidates()` → `format_passages_as_context()` → `build_rag_prompt()` → `generate()` → `parse_answer()`. Returns `(passages, answer)`. |
+| **How** | Loads config; `load_indices(mode)` builds/loads the BM25 index (and, in hybrid mode, the persisted dense index) once at process startup, and `_ensure_loaded(mode)` lazily loads them on first use otherwise. `retrieve_candidates(question, r_cfg)` runs BM25 (+ dense + RRF fusion + optional OpenRouter rerank, per `r_cfg`) and returns the final top-k candidates — this is the single retrieval implementation shared by `rag_query()` and `scripts/evaluate_retrieval.py`, so the eval harness always measures exactly what the live pipeline does. `rag_query(question, top_k=..., config=...)` runs: `retrieve_candidates()` → `format_passages_as_context()` → `build_rag_prompt()` → `generate()` → `parse_answer()`. Returns `(passages, answer)`. |
 
 ---
 

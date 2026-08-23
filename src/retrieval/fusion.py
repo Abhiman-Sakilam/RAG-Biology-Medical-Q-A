@@ -7,8 +7,8 @@ def rrf_fuse(
     k: int = 60,
     top_n: Optional[int] = None,
 ) -> List[Tuple[int, str, float]]:
-    scores: Dict[int, float] = {}
-    texts: Dict[int, str] = {}
+    scores: Dict[Union[int, str], float] = {}
+    texts: Dict[Union[int, str], str] = {}
     for rank, (pid, text, _) in enumerate(sparse_results, start=1):
         scores[pid] = scores.get(pid, 0.0) + 1.0 / (k + rank)
         texts[pid] = text

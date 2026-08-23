@@ -30,3 +30,20 @@ def test_rrf_fuse_handles_sparse_only_id():
     dense = []
     fused = rrf_fuse(sparse, dense, k=60)
     assert fused == [(1, "a", 1.0 / 61)]
+
+
+def test_rrf_fuse_handles_chunked_ids():
+    sparse = [("5::0", "chunk a", 5.0), ("5::1", "chunk b", 3.0)]
+    dense = [("5::0", "chunk a", 0.9), ("6::0", "chunk c", 0.8)]
+    fused = rrf_fuse(sparse, dense, k=60)
+    fused_ids = [pid for pid, _, _ in fused]
+    assert fused_ids[0] == "5::0"
+    assert set(fused_ids) == {"5::0", "5::1", "6::0"}
+
+
+def test_rrf_fuse_chunked_id_score():
+    sparse = [("123::0", "text", 5.0)]
+    dense = [("123::0", "text", 0.9)]
+    fused = rrf_fuse(sparse, dense, k=60)
+    expected = 1.0 / 61 + 1.0 / 61
+    assert fused[0] == ("123::0", "text", expected)
