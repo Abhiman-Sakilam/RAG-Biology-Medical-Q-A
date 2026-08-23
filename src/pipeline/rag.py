@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import List, Tuple, Any, Dict, Optional
+from typing import List, Tuple, Any, Dict, Optional, Union
 
 try:
     import tomllib
@@ -77,10 +77,14 @@ def _ensure_loaded(mode: str) -> None:
 def retrieve_candidates(
     question: str,
     r_cfg: Dict[str, Any],
-) -> List[Tuple[int, str, float]]:
+) -> List[Tuple[Union[int, str], str, float]]:
     """Run BM25 (+ dense + fusion + optional rerank per r_cfg) and return the
     final top_k candidates. Shared by rag_query and scripts/evaluate_retrieval.py
-    so both use the exact same retrieval logic."""
+    so both use the exact same retrieval logic.
+
+    Returns list of (chunk_id, text, score) tuples where chunk_id may be an int
+    (non-chunked passage) or string (chunked id like "parent::0").
+    """
     mode = r_cfg.get("mode", "bm25")
     do_rerank = r_cfg.get("rerank", False)
     top_k = r_cfg.get("top_k", 5)
@@ -119,7 +123,7 @@ def rag_query(
     top_k: int = None,
     max_tokens: int = None,
     config: Dict[str, Any] = None,
-) -> Tuple[List[Tuple[int, str, float]], str]:
+) -> Tuple[List[Tuple[Union[int, str], str, float]], str]:
     cfg = config or _load_config()
     r_cfg = dict(cfg.get("retrieval", {}))
     if top_k is not None:

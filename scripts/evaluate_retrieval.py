@@ -5,31 +5,44 @@ hybrid+rerank against the gold relevant_passage_ids in the test QA split.
 This is the Phase 1 acceptance gate: hybrid+rerank should show a
 measurable improvement over the bm25 baseline before Phase 1 is
 considered done.
+
+Task 2: With chunking enabled, this script maps chunk_id -> parent_id before
+scoring, ensuring eval metrics match Phase 1 baseline (0.502/0.833/0.735).
 """
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Union
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.data.loaders import load_qa
+from src.data.chunking import parent_id_of
 from src.eval.metrics import recall_at_k, mrr_at_k, ndcg_at_k
 
 
 def evaluate_mode(
     qa_pairs: List[dict],
-    retrieve_fn: Callable[[str], List[int]],
+    retrieve_fn: Callable[[str], List[Union[int, str]]],
 ) -> Dict[str, float]:
+    """Evaluate retrieval mode, mapping chunk_ids to parent_ids before scoring.
+
+    retrieve_fn returns chunk or passage ids (may be strings like "parent::0").
+    This function maps them back to parent passage ids before comparing against gold.
+    """
     recalls, mrrs, ndcgs = [], [], []
     for qa in qa_pairs:
         retrieved_ids = retrieve_fn(qa["question"])
         gold_ids = qa["relevant_passage_ids"]
-        recalls.append(recall_at_k(retrieved_ids, gold_ids))
-        mrrs.append(mrr_at_k(retrieved_ids, gold_ids))
-        ndcgs.append(ndcg_at_k(retrieved_ids, gold_ids))
+
+        # Task 2: Map chunk ids back to parent passage ids for scoring
+        retrieved_parent_ids = [parent_id_of(cid) for cid in retrieved_ids]
+
+        recalls.append(recall_at_k(retrieved_parent_ids, gold_ids))
+        mrrs.append(mrr_at_k(retrieved_parent_ids, gold_ids))
+        ndcgs.append(ndcg_at_k(retrieved_parent_ids, gold_ids))
     n = len(qa_pairs)
     return {
         "recall_at_k": sum(recalls) / n,

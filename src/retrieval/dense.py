@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import faiss
 import httpx
@@ -16,32 +16,36 @@ load_env()
 
 logger = logging.getLogger(__name__)
 
-VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings"
-EMBEDDING_MODEL = "voyage-3-lite"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+EMBEDDING_MODEL = "liquid/lfm2.5-embedding-350m"
 
-# Voyage enforces a 10,000 tokens-per-minute limit on this endpoint. We pause
-# once accumulated usage crosses a safety margin below that ceiling, and we
-# retry a handful of times if we still get rate-limited.
-VOYAGE_TPM_LIMIT = 10_000
-VOYAGE_TPM_SAFETY_MARGIN = 9_000
+# OpenRouter's free tier enforces a rate limit on this endpoint. We pause once
+# accumulated usage crosses a safety margin below that ceiling, and we retry a
+# handful of times if we still get rate-limited.
+EMBEDDING_TPM_LIMIT = 10_000
+EMBEDDING_TPM_SAFETY_MARGIN = 9_000
 MAX_RATE_LIMIT_RETRIES = 3
 RATE_LIMIT_RETRY_BACKOFF_SECONDS = 5
 
 
-def _get_api_key() -> str:
-    api_key = os.getenv("VOYAGE_API_KEY")
+def _get_embedding_client() -> httpx.Client:
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise ValueError(
-            "Set VOYAGE_API_KEY in setup/.env to use hybrid retrieval (dense embeddings)"
+            "Set OPENROUTER_API_KEY in setup/.env to use hybrid retrieval (dense embeddings)"
         )
-    return api_key
+    return httpx.Client(
+        base_url=OPENROUTER_BASE_URL,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30.0,
+    )
 
 
-def _post_embeddings_with_retry(client: httpx.Client, headers: dict, payload: dict) -> dict:
+def _post_embeddings_with_retry(client: httpx.Client, payload: dict) -> dict:
     """POST a single embeddings batch, retrying on 429s with a backoff sleep."""
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         try:
-            resp = client.post(VOYAGE_EMBEDDINGS_URL, json=payload, headers=headers)
+            resp = client.post("/embeddings", json=payload)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
@@ -49,7 +53,7 @@ def _post_embeddings_with_retry(client: httpx.Client, headers: dict, payload: di
             if is_rate_limited and attempt < MAX_RATE_LIMIT_RETRIES - 1:
                 wait_time = RATE_LIMIT_RETRY_BACKOFF_SECONDS * (attempt + 1)
                 logger.warning(
-                    "Voyage API rate limited (429); retrying in %ds (attempt %d/%d)",
+                    "OpenRouter API rate limited (429); retrying in %ds (attempt %d/%d)",
                     wait_time,
                     attempt + 1,
                     MAX_RATE_LIMIT_RETRIES,
@@ -65,10 +69,8 @@ def embed_texts(
     client: Optional[httpx.Client] = None,
     batch_size: int = 10,
 ) -> np.ndarray:
-    api_key = _get_api_key()
-    headers = {"Authorization": f"Bearer {api_key}"}
     owns_client = client is None
-    client = client or httpx.Client(timeout=30.0)
+    client = client or _get_embedding_client()
     vectors = []
     tokens_this_minute = 0
     minute_start = time.monotonic()
@@ -78,14 +80,14 @@ def embed_texts(
             payload = {
                 "input": batch,
                 "model": EMBEDDING_MODEL,
-                "input_type": "document",
+                "encoding_format": "float",
             }
 
             elapsed = time.monotonic() - minute_start
-            if tokens_this_minute >= VOYAGE_TPM_SAFETY_MARGIN and elapsed < 60:
+            if tokens_this_minute >= EMBEDDING_TPM_SAFETY_MARGIN and elapsed < 60:
                 sleep_time = 60 - elapsed
                 logger.warning(
-                    "Approaching Voyage TPM limit (%d tokens used this minute); "
+                    "Approaching OpenRouter TPM limit (%d tokens used this minute); "
                     "sleeping %.1fs",
                     tokens_this_minute,
                     sleep_time,
@@ -94,9 +96,9 @@ def embed_texts(
                 tokens_this_minute = 0
                 minute_start = time.monotonic()
 
-            data = _post_embeddings_with_retry(client, headers, payload)
+            data = _post_embeddings_with_retry(client, payload)
             vectors.extend(item["embedding"] for item in data["data"])
-            tokens_this_minute += data.get("usage", {}).get("total_tokens", 0)
+            tokens_this_minute += data.get("usage", {}).get("prompt_tokens", 0)
 
             # Add delay between batches to respect rate limits
             if i + batch_size < len(texts):  # Not the last batch
@@ -132,7 +134,12 @@ def dense_search(
     id_to_passage: dict,
     k: int = 5,
     client: Optional[httpx.Client] = None,
-) -> List[Tuple[int, str, float]]:
+) -> List[Tuple[Union[int, str], str, float]]:
+    """Search dense index and return top-k results.
+
+    Returns list of (chunk_id, text, score) tuples.
+    chunk_id may be an int (non-chunked passage) or string (chunked id like "parent::0").
+    """
     q_vec = embed_texts([query], client=client)
     scores, indices = index.search(q_vec, k)
     out = []
@@ -142,7 +149,7 @@ def dense_search(
         i = int(idx)
         pid = corpus[i]["id"]
         text = id_to_passage[pid]
-        out.append((int(pid), text, float(score)))
+        out.append((pid, text, float(score)))
     return out
 
 
