@@ -16,8 +16,9 @@ def format_passages_as_context(
         if total + len(line) > max_chars:
             remaining = max_chars - total - 20
             if remaining > 0:
-                line = line[:remaining] + "\n...[truncated]\n"
-            parts.append(line)
+                parts.append(line[:remaining] + "\n...[truncated]\n")
+            # When the budget is already spent there is nothing left to add;
+            # appending the untrimmed line here would blow past max_chars.
             break
         parts.append(line)
         total += len(line)

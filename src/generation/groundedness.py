@@ -1,31 +1,39 @@
 import re
 import logging
-from typing import List, Tuple
+from typing import Any, Dict, List, Sequence
+
 from openai import OpenAI
 
 from src.generation.llm import resolve_model
 
 logger = logging.getLogger(__name__)
 
+# Each evidence passage is trimmed before it goes into the judge prompt so a
+# long-tail passage cannot push the request over the provider's size limit.
+_MAX_CHARS_PER_PASSAGE = 1500
+
 
 def score_groundedness(
     answer: str,
-    citations: List[Tuple[str, int]],
+    evidence: Sequence[Dict[str, Any]],
     llm_client: OpenAI,
     model: str = None,
 ) -> float:
-    """Score the groundedness of an answer based on its citations.
+    """Score how well an answer is supported by the passages it was built from.
 
-    Asks an LLM to evaluate whether the answer is properly grounded in the cited passages.
-    Returns a score between 0 and 1 where higher means more grounded.
+    The judge is shown the answer *and the full text of each evidence passage*,
+    because a grader that only sees citation markers has no way to tell whether
+    a claim is supported -- it can only guess from the shape of the answer.
 
     On LLM errors, returns 0.5 (neutral fallback) to avoid failing requests.
 
     Args:
         answer: The generated answer text.
-        citations: List of (marker, passage_id) tuples for cited passages.
+        evidence: Passages the answer should be grounded in. Each item is a dict
+            with a "text" key, optionally "marker" and "passage_id" (the shape
+            produced by rag_query_full's citation list).
         llm_client: OpenAI client for calling the LLM.
-        model: Optional model override; uses default from env if not specified.
+        model: Optional model override; resolved from the environment if unset.
 
     Returns:
         float: Groundedness score between 0 and 1.
@@ -34,27 +42,13 @@ def score_groundedness(
         logger.warning("LLM client is None, returning fallback groundedness score 0.5")
         return 0.5
 
-    # Build the groundedness evaluation prompt
-    citations_info = "\n".join(
-        [f"- {marker} (Passage ID: {pid})" for marker, pid in citations]
-    )
+    if not evidence:
+        # Nothing to be grounded in, so the answer cannot be supported. Saying
+        # so costs nothing and is more honest than asking the judge to guess.
+        logger.warning("No evidence passages supplied; scoring answer as ungrounded")
+        return 0.0
 
-    prompt = f"""Evaluate the groundedness of the following answer based on the citations provided.
-
-Answer:
-{answer}
-
-Citations in the answer:
-{citations_info if citations_info else "No citations found"}
-
-Rate the groundedness on a scale of 0.0 to 1.0 where:
-- 1.0 = All claims are fully supported by citations and passages
-- 0.7 = Most claims are grounded, minor gaps exist
-- 0.5 = Some claims are supported, some are not
-- 0.3 = Few claims are supported, many are unsupported
-- 0.0 = No claims are grounded in passages or no citations provided
-
-Respond with ONLY the numerical score (e.g., 0.85). Do not include any other text."""
+    prompt = _build_prompt(answer, evidence)
 
     try:
         response = llm_client.chat.completions.create(
@@ -63,15 +57,41 @@ Respond with ONLY the numerical score (e.g., 0.85). Do not include any other tex
             max_tokens=50,
             temperature=0.0,
         )
-        response_text = response.choices[0].message.content or ""
-
-        # Extract the numerical score from the response
-        score = _parse_score_from_response(response_text)
-        return score
-
+        return _parse_score_from_response(response.choices[0].message.content or "")
     except Exception as e:
         logger.error(f"Error computing groundedness score: {e}")
         return 0.5  # Fallback to neutral score on error
+
+
+def _build_prompt(answer: str, evidence: Sequence[Dict[str, Any]]) -> str:
+    blocks: List[str] = []
+    for i, passage in enumerate(evidence, 1):
+        marker = passage.get("marker") or f"[Passage {i}]"
+        text = (passage.get("text") or "").strip()
+        if len(text) > _MAX_CHARS_PER_PASSAGE:
+            text = text[:_MAX_CHARS_PER_PASSAGE] + " ...[truncated]"
+        pid = passage.get("passage_id")
+        header = f"{marker} (id={pid})" if pid is not None else marker
+        blocks.append(f"{header}\n{text}")
+    passages_block = "\n\n".join(blocks)
+
+    return f"""You are grading whether an answer is supported by its source passages.
+
+Source passages:
+{passages_block}
+
+Answer to grade:
+{answer}
+
+Compare every factual claim in the answer against the passages above. Rate the
+groundedness on a scale of 0.0 to 1.0 where:
+- 1.0 = every claim is directly supported by the passages
+- 0.7 = most claims are supported, minor unsupported details
+- 0.5 = some claims are supported, some are not
+- 0.3 = few claims are supported, most are not in the passages
+- 0.0 = the answer contradicts the passages or is unsupported by them
+
+Respond with ONLY the numerical score (e.g., 0.85). Do not include any other text."""
 
 
 def _parse_score_from_response(response_text: str) -> float:

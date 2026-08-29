@@ -51,7 +51,7 @@ def test_rerank_sends_expected_request_format():
     fake_client = _FakeClient(_chat_payload("0\n1"))
     rerank("my query", candidates, top_n=2, api_key="test-key", client=fake_client)
     url, payload, headers = fake_client.calls[0]
-    assert url == "https://openrouter.ai/api/v1/completions"
+    assert url == "https://openrouter.ai/api/v1/chat/completions"
     assert payload["model"] == "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
     assert payload["temperature"] == 0
     assert "my query" in payload["messages"][0]["content"]

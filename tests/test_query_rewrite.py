@@ -1,4 +1,3 @@
-import pytest
 import src.query.rewrite as rewrite_module
 import src.pipeline.rag as rag_module
 

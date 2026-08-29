@@ -9,10 +9,8 @@ Tests cover:
 - JSON output format and content
 """
 import pytest
-import json
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime
+from unittest.mock import Mock, patch
 
 from scripts.evaluate_answers import evaluate_answers, _score_faithfulness_with_llm
 

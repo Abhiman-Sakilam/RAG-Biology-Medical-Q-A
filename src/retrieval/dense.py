@@ -84,7 +84,14 @@ def embed_texts(
             }
 
             elapsed = time.monotonic() - minute_start
-            if tokens_this_minute >= EMBEDDING_TPM_SAFETY_MARGIN and elapsed < 60:
+            if elapsed >= 60:
+                # A minute rolled over on its own (embedding 40k passages takes
+                # hours, so this is the common case): start a fresh window.
+                # Without this the counter grew forever and the check below
+                # could never fire again.
+                tokens_this_minute = 0
+                minute_start = time.monotonic()
+            elif tokens_this_minute >= EMBEDDING_TPM_SAFETY_MARGIN:
                 sleep_time = 60 - elapsed
                 logger.warning(
                     "Approaching OpenRouter TPM limit (%d tokens used this minute); "
@@ -143,7 +150,7 @@ def dense_search(
     q_vec = embed_texts([query], client=client)
     scores, indices = index.search(q_vec, k)
     out = []
-    for idx, score in zip(indices[0], scores[0]):
+    for idx, score in zip(indices[0], scores[0], strict=True):
         if idx == -1:
             continue
         i = int(idx)

@@ -8,11 +8,7 @@ Tests cover:
 - Config flags gating both features (default OFF)
 - QueryResponse model includes citations and groundedness fields
 """
-import pytest
-import json
-from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from typing import Dict, Any
+from unittest.mock import Mock, patch
 
 from src.pipeline.rag import rag_query, _load_config
 

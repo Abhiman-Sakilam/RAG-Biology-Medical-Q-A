@@ -20,19 +20,20 @@ sys.path.insert(0, str(project_root))
 
 from src.data.loaders import load_qa
 from src.data.chunking import parent_id_of
-from src.eval.metrics import recall_at_k, mrr_at_k, ndcg_at_k
+from src.eval.metrics import recall_at_k, mrr_at_k, ndcg_at_k, max_recall_at_k
 
 
 def evaluate_mode(
     qa_pairs: List[dict],
     retrieve_fn: Callable[[str], List[Union[int, str]]],
+    k: int = 5,
 ) -> Dict[str, float]:
     """Evaluate retrieval mode, mapping chunk_ids to parent_ids before scoring.
 
     retrieve_fn returns chunk or passage ids (may be strings like "parent::0").
     This function maps them back to parent passage ids before comparing against gold.
     """
-    recalls, mrrs, ndcgs = [], [], []
+    recalls, mrrs, ndcgs, ceilings = [], [], [], []
     for qa in qa_pairs:
         retrieved_ids = retrieve_fn(qa["question"])
         gold_ids = qa["relevant_passage_ids"]
@@ -40,14 +41,21 @@ def evaluate_mode(
         # Task 2: Map chunk ids back to parent passage ids for scoring
         retrieved_parent_ids = [parent_id_of(cid) for cid in retrieved_ids]
 
-        recalls.append(recall_at_k(retrieved_parent_ids, gold_ids))
-        mrrs.append(mrr_at_k(retrieved_parent_ids, gold_ids))
-        ndcgs.append(ndcg_at_k(retrieved_parent_ids, gold_ids))
+        recalls.append(recall_at_k(retrieved_parent_ids, gold_ids, k=k))
+        mrrs.append(mrr_at_k(retrieved_parent_ids, gold_ids, k=k))
+        ndcgs.append(ndcg_at_k(retrieved_parent_ids, gold_ids, k=k))
+        ceilings.append(max_recall_at_k(gold_ids, k))
     n = len(qa_pairs)
+    ceiling = sum(ceilings) / n
+    recall = sum(recalls) / n
     return {
-        "recall_at_k": sum(recalls) / n,
+        "recall_at_k": recall,
         "mrr_at_k": sum(mrrs) / n,
         "ndcg_at_k": sum(ndcgs) / n,
+        # The test set averages 8.66 gold passages per question, so recall@5 can
+        # never reach 1.0. Reporting the ceiling makes the score readable.
+        "max_recall_at_k": ceiling,
+        "recall_vs_ceiling": (recall / ceiling) if ceiling else 0.0,
     }
 
 
@@ -84,14 +92,16 @@ def main():
 
     results = {}
     bm25_cfg = {**base_r_cfg, "mode": "bm25", "rerank": False}
-    results["bm25"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(bm25_cfg))
+    results["bm25"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(bm25_cfg), k=args.top_k)
 
     if has_dense:
         hybrid_cfg = {**base_r_cfg, "mode": "hybrid", "rerank": False}
-        results["hybrid"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(hybrid_cfg))
+        results["hybrid"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(hybrid_cfg), k=args.top_k)
 
         hybrid_rerank_cfg = {**base_r_cfg, "mode": "hybrid", "rerank": True}
-        results["hybrid_rerank"] = evaluate_mode(qa_pairs, _retrieve_fn_from_config(hybrid_rerank_cfg))
+        results["hybrid_rerank"] = evaluate_mode(
+        qa_pairs, _retrieve_fn_from_config(hybrid_rerank_cfg), k=args.top_k
+    )
     else:
         print(
             "No dense index found at artifacts/dense_index — run scripts/build_embeddings.py "

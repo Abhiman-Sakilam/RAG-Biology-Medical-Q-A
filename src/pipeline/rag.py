@@ -12,7 +12,7 @@ import httpx
 from src.retrieval.sparse import build_index, search as bm25_search
 from src.retrieval.dense import load_index as load_dense_index, dense_search
 from src.retrieval.fusion import rrf_fuse
-from src.retrieval.rerank import rerank as voyage_rerank
+from src.retrieval.rerank import rerank as rerank_candidates
 from src.prompts.formatter import format_passages_as_context
 from src.prompts.templates import build_rag_prompt
 from src.generation.llm import generate, _get_client
@@ -132,10 +132,15 @@ def retrieve_candidates(
     if do_rerank:
         rerank_top_n = max(top_k, r_cfg.get("rerank_top_n", top_k))
         try:
-            reranked = voyage_rerank(question, candidates, top_n=rerank_top_n)
+            reranked = rerank_candidates(question, candidates, top_n=rerank_top_n)
             return reranked[:top_k]
         except httpx.HTTPError as e:
-            logger.warning("Voyage rerank failed (%s); falling back to unreranked candidates", e)
+            logger.warning("Rerank request failed (%s); using unreranked candidates", e)
+            return candidates[:top_k]
+        except (KeyError, IndexError, TypeError) as e:
+            # A malformed 200 response should cost us the reranking step, not
+            # the whole query.
+            logger.warning("Rerank response unusable (%s); using unreranked candidates", e)
             return candidates[:top_k]
 
     return candidates[:top_k]
@@ -230,8 +235,16 @@ def rag_query_full(
     if guardrail_cfg.get("groundedness_enabled", False):
         try:
             llm_client = _get_client()
+            # The judge needs passage text, not just markers. Prefer the
+            # passages the answer actually cited; with citations disabled (or
+            # simply absent) fall back to everything that was retrieved, since
+            # that is the context the answer was written from.
+            evidence = citations_with_text or [
+                {"marker": f"[Passage {i}]", "passage_id": pid, "text": text}
+                for i, (pid, text, _score) in enumerate(passages, 1)
+            ]
             groundedness_score = score_groundedness(
-                cleaned_answer, citations, llm_client, model=model
+                cleaned_answer, evidence, llm_client, model=model
             )
             threshold = guardrail_cfg.get("groundedness_threshold", 0.5)
             groundedness_flagged = groundedness_score < threshold

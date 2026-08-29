@@ -8,12 +8,10 @@ Tests verify:
 """
 import json
 from pathlib import Path
-from typing import Dict, List
-import sys
 
 import pytest
 
-from src.data.loaders import load_corpus, load_qa
+from src.data.loaders import load_corpus
 from src.data.chunking import parent_id_of, chunk_passages
 from src.eval.metrics import recall_at_k, mrr_at_k, ndcg_at_k
 

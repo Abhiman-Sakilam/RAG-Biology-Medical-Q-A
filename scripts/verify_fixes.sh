@@ -212,6 +212,130 @@ else
   skip "live HyDE check (--no-api)"
 fi
 
+# ------------------------------------------------ 3/5/6/9/11/12 static checks
+say "Bugs 3, 5, 6, 9, 11, 12 — static invariants"
+if "$PY" - <<'EOF'
+import logging, sys; sys.path.insert(0, '.')
+logging.disable(logging.WARNING)
+from unittest.mock import MagicMock
+
+# Bug 3: the groundedness judge must see passage text, not just markers.
+from src.generation.groundedness import score_groundedness
+c = MagicMock()
+c.chat.completions.create.return_value.choices[0].message.content = "0.8"
+score_groundedness("claim", [{"marker": "[Passage 1]", "passage_id": 7,
+                              "text": "Distinctive source sentence."}], c)
+prompt = c.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+assert "Distinctive source sentence." in prompt, "judge prompt has no passage text"
+assert score_groundedness("claim", [], c) == 0.0, "no evidence must score 0"
+
+# Bug 6: payload shape, endpoint and response parsing must agree.
+import src.retrieval.rerank as rr
+assert rr.OPENROUTER_RERANK_URL.endswith("/chat/completions"), rr.OPENROUTER_RERANK_URL
+
+# Bug 12: a malformed 200 costs the reranking step, not the query.
+cl = MagicMock()
+cl.post.return_value.raise_for_status.return_value = None
+cl.post.return_value.json.return_value = {"unexpected": "shape"}
+out = rr.rerank("q", [(1, "a", 0.9), (2, "b", 0.5)], top_n=2, api_key="k", client=cl)
+assert [p for p, _, _ in out] == [1, 2], out
+
+# Bug 9: the *_at_k helpers must truncate to k.
+from src.eval.metrics import recall_at_k, max_recall_at_k
+assert recall_at_k([9, 9, 9, 9, 9, 2], [2], k=5) == 0.0
+assert max_recall_at_k(list(range(8)), k=5) == 5 / 8
+
+# Bug 11: no chunk may exceed the threshold or duplicate a sibling.
+from src.data.chunking import chunk_passages
+text = " ".join(["word"] * 60) + ". " + " ".join(["tail"] * 30) + "."
+chunks = chunk_passages([{"id": 1, "text": text}], threshold=20)
+assert all(len(c["text"].split()) <= 20 for c in chunks), "oversized chunk"
+assert len(chunks) < 15, f"chunk count blew up: {len(chunks)}"
+
+# Context budget must actually be respected.
+from src.prompts.formatter import format_passages_as_context
+ctx = format_passages_as_context([(1, "A" * 100, .9), (2, "B" * 5900, .8), (3, "C" * 9000, .7)],
+                                 max_chars=6000)
+assert len(ctx) <= 6000, f"context is {len(ctx)} chars"
+EOF
+then
+  ok "judge sees evidence; rerank endpoint/parse agree; k enforced; chunks bounded"
+else
+  bad "one or more static invariants broken"
+fi
+
+if "$PY" - <<'EOF'
+import logging, sys; sys.path.insert(0, '.')
+logging.disable(logging.WARNING)  # the mocked throttle logs on every batch
+from unittest.mock import MagicMock
+import src.retrieval.dense as dense
+
+# Bug 5: a slow opening minute used to disable the guard permanently, leaving a
+# later burst unprotected. Per-batch token volume really does vary this much
+# across the corpus's passage-size long tail.
+clock = [0.0]
+sent, throttles, state = [], [], {"n": 0}
+
+def post(*a, **k):
+    tokens = 400 if state["n"] < 9 else 2000
+    sent.append((clock[0], tokens))
+    state["n"] += 1
+    clock[0] += 8.0
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"data": [{"embedding": [0.1]}] * 10,
+                           "usage": {"prompt_tokens": tokens}}
+    return r
+
+def sleep(s):
+    if s > 2:
+        throttles.append(clock[0])
+    clock[0] += s
+
+c = MagicMock(); c.post.side_effect = post
+dense.time.monotonic = lambda: clock[0]
+dense.time.sleep = sleep
+dense.embed_texts(["t"] * 300, client=c)
+
+burst_start = sent[9][0]
+during_burst = [t for t in throttles if t >= burst_start]
+assert during_burst, "guard stayed disabled after the first minute elapsed"
+EOF
+then
+  ok "embedding TPM throttle survives a minute boundary"
+else
+  bad "TPM throttle is still disabled after the first minute"
+fi
+
+# --------------------------------------------- provider errors are not 500s
+say "Provider errors map to real status codes, not a bare 500"
+if "$PY" - <<'EOF'
+import sys; sys.path.insert(0, '.')
+import httpx
+from openai import APIStatusError
+from fastapi.testclient import TestClient
+import scripts.run_server as srv
+
+def raiser(status):
+    req = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+    res = httpx.Response(status, request=req, json={"error": {"message": "x"}})
+    err = APIStatusError("boom", response=res, body={"error": {"message": "x"}})
+    def _f(_q):
+        raise err
+    return _f
+
+client = TestClient(srv.app)
+for provider_status, expected in ((413, 413), (429, 429), (500, 502)):
+    srv.rag_query_full = raiser(provider_status)
+    got = client.post("/query", json={"question": "q?"}).status_code
+    assert got == expected, f"provider {provider_status} -> {got}, expected {expected}"
+EOF
+then
+  ok "413 -> 413, 429 -> 429, other provider errors -> 502"
+else
+  bad "provider errors still surface as internal errors"
+fi
+
 # --------------------------------------------- 1. chunked ids over real HTTP
 say "Bug 1 — /query returns 200 for a question that retrieves a chunked passage"
 if [[ $NO_API -eq 1 ]]; then

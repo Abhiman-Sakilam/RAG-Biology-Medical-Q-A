@@ -95,78 +95,73 @@ class TestCitationExtraction:
 
 
 class TestGroundednessScoring:
-    """Test groundedness score computation."""
+    """Test groundedness score computation.
+
+    The judge must be shown the text of each evidence passage: a grader that
+    only sees citation markers has nothing to compare the answer against.
+    """
+
+    EVIDENCE = [
+        {"marker": "[Passage 1]", "passage_id": 23179372,
+         "text": "The sky appears blue because of Rayleigh scattering."},
+    ]
+
+    def _client(self, content):
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.choices = [Mock()]
+        mock_response.choices[0].message.content = content
+        mock_client.chat.completions.create.return_value = mock_response
+        return mock_client
 
     def test_score_groundedness_valid_response(self):
-        """Test groundedness scoring with valid LLM response."""
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.choices = [Mock()]
-        mock_response.choices[0].message.content = "Groundedness score: 0.85"
-        mock_client.chat.completions.create.return_value = mock_response
-
-        answer = "The sky is blue [Passage 1]."
-        citations = [("[Passage 1]", 1)]
-        score = score_groundedness(answer, citations, mock_client)
-
+        client = self._client("Groundedness score: 0.85")
+        score = score_groundedness("The sky is blue [Passage 1].", self.EVIDENCE, client)
         assert score == 0.85
-        # Verify LLM was called
-        assert mock_client.chat.completions.create.called
+        assert client.chat.completions.create.called
+
+    def test_prompt_contains_the_passage_text(self):
+        """Regression: the judge used to receive only markers and ids."""
+        client = self._client("0.9")
+        score_groundedness("The sky is blue [Passage 1].", self.EVIDENCE, client)
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Rayleigh scattering" in prompt
+        assert "[Passage 1]" in prompt
+
+    def test_long_passages_are_truncated_in_the_prompt(self):
+        client = self._client("0.9")
+        evidence = [{"marker": "[Passage 1]", "passage_id": 1, "text": "x" * 5000}]
+        score_groundedness("claim", evidence, client)
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "...[truncated]" in prompt
+        assert len(prompt) < 4000
 
     def test_score_groundedness_parsing_integer(self):
-        """Test groundedness score parsing with integer response."""
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.choices = [Mock()]
-        mock_response.choices[0].message.content = "Score: 1"
-        mock_client.chat.completions.create.return_value = mock_response
-
-        answer = "Valid claim [Passage 1]."
-        citations = [("[Passage 1]", 1)]
-        score = score_groundedness(answer, citations, mock_client)
-
-        assert score == 1.0
+        client = self._client("Score: 1")
+        assert score_groundedness("Valid claim [Passage 1].", self.EVIDENCE, client) == 1.0
 
     def test_score_groundedness_error_fallback(self):
-        """Test fallback to 0.5 when LLM call fails."""
-        mock_client = Mock()
-        mock_client.chat.completions.create.side_effect = Exception("API error")
+        client = Mock()
+        client.chat.completions.create.side_effect = Exception("API error")
+        assert score_groundedness("Some answer.", self.EVIDENCE, client) == 0.5
 
-        answer = "Some answer [Passage 1]."
-        citations = [("[Passage 1]", 1)]
-        score = score_groundedness(answer, citations, mock_client)
-
-        assert score == 0.5
-
-    def test_score_groundedness_no_citations(self):
-        """Test groundedness scoring with no citations (ungrounded)."""
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.choices = [Mock()]
-        mock_response.choices[0].message.content = "Groundedness: 0.0"
-        mock_client.chat.completions.create.return_value = mock_response
-
-        answer = "Unsubstantiated claim with no citations."
-        citations = []
-        score = score_groundedness(answer, citations, mock_client)
-
-        # Should still call LLM and return parsed score
-        assert score == 0.0
-        assert mock_client.chat.completions.create.called
+    def test_no_evidence_scores_zero_without_calling_the_llm(self):
+        """Nothing to be grounded in means ungrounded; no need to ask a judge."""
+        client = self._client("0.9")
+        assert score_groundedness("Unsubstantiated claim.", [], client) == 0.0
+        assert not client.chat.completions.create.called
 
     def test_score_groundedness_with_multiple_citations(self):
-        """Test groundedness scoring with multiple citations."""
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.choices = [Mock()]
-        mock_response.choices[0].message.content = "0.75"
-        mock_client.chat.completions.create.return_value = mock_response
-
-        answer = "Fact one [P 1] and fact two [P 2] are grounded."
-        citations = [("[P 1]", 1), ("[P 2]", 2)]
-        score = score_groundedness(answer, citations, mock_client)
-
+        client = self._client("0.75")
+        evidence = [
+            {"marker": "[P 1]", "passage_id": 1, "text": "Fact one is documented."},
+            {"marker": "[P 2]", "passage_id": 2, "text": "Fact two is documented."},
+        ]
+        score = score_groundedness("Fact one [P 1] and fact two [P 2].", evidence, client)
         assert score == 0.75
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "Fact one is documented." in prompt
+        assert "Fact two is documented." in prompt
 
 
 class TestGroundednessConfig:

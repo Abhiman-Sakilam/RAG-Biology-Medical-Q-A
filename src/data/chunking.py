@@ -9,6 +9,17 @@ _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 _DEFAULT_OVERLAP_WORDS = 50
 
 
+def _effective_overlap(threshold: int) -> int:
+    """Overlap capped at half the chunk budget.
+
+    A fixed 50-word overlap is larger than the whole budget for small
+    thresholds, which drove the word-splitter's step size to 1 and made it emit
+    one chunk per word. Capping at threshold // 2 keeps every step >= half a
+    chunk, so the number of chunks stays linear in the input.
+    """
+    return max(1, min(_DEFAULT_OVERLAP_WORDS, threshold // 2))
+
+
 def chunk_passages(corpus: List[Dict[str, Any]], threshold: int = 500) -> List[Dict[str, Any]]:
     """Split long passages into overlapping chunks; leave short ones as-is.
 
@@ -68,16 +79,32 @@ def _group_sentences_into_chunks(
     current_word_count = 0
     chunk_idx = 0
 
+    def flush() -> None:
+        nonlocal chunk_idx, current_sentences, current_word_count
+        chunks.append(_make_chunk(parent_id, chunk_idx, " ".join(current_sentences)))
+        chunk_idx += 1
+        current_sentences = _overlap_tail(current_sentences, _effective_overlap(threshold))
+        current_word_count = sum(len(s.split()) for s in current_sentences)
+
     for sentence in sentences:
         sentence_word_count = len(sentence.split())
 
         if current_sentences and current_word_count + sentence_word_count > threshold:
-            chunks.append(
-                _make_chunk(parent_id, chunk_idx, " ".join(current_sentences))
-            )
-            chunk_idx += 1
-            current_sentences = _overlap_tail(current_sentences, _DEFAULT_OVERLAP_WORDS)
-            current_word_count = sum(len(s.split()) for s in current_sentences)
+            flush()
+
+        if sentence_word_count > threshold:
+            # A single sentence longer than the whole budget cannot be grouped;
+            # carrying it whole would produce a chunk far over threshold and, as
+            # overlap, duplicate it into the next chunk too. Split it by words.
+            if current_sentences:
+                flush()
+            for part in _split_by_words(parent_id, sentence.split(), threshold):
+                part["id"] = f"{parent_id}::{chunk_idx}"
+                chunk_idx += 1
+                chunks.append(part)
+            current_sentences = []
+            current_word_count = 0
+            continue
 
         current_sentences.append(sentence)
         current_word_count += sentence_word_count
@@ -89,10 +116,18 @@ def _group_sentences_into_chunks(
 
 
 def _overlap_tail(sentences: List[str], target_words: int) -> List[str]:
-    """Return the trailing sentences whose combined word count is >= target_words."""
+    """Return the trailing sentences whose combined word count is >= target_words.
+
+    Never returns every sentence: carrying the whole chunk forward as overlap
+    would duplicate it verbatim into the next chunk and make chunks grow without
+    bound, so at least the first sentence is always dropped.
+    """
+    if len(sentences) <= 1:
+        return []
+
     tail: List[str] = []
     word_count = 0
-    for sentence in reversed(sentences):
+    for sentence in reversed(sentences[1:]):
         tail.insert(0, sentence)
         word_count += len(sentence.split())
         if word_count >= target_words:
@@ -115,10 +150,7 @@ def _split_by_words(parent_id: Any, words: List[str], threshold: int) -> List[Di
         if end >= len(words):
             break
 
-        step = threshold - _DEFAULT_OVERLAP_WORDS
-        if step < 1:
-            step = 1  # Ensure we always move forward
-        start += step
+        start += threshold - _effective_overlap(threshold)
 
     return chunks
 

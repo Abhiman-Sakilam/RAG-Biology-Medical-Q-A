@@ -1,12 +1,12 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 
 def rrf_fuse(
-    sparse_results: List[Tuple[int, str, float]],
-    dense_results: List[Tuple[int, str, float]],
+    sparse_results: List[Tuple[Union[int, str], str, float]],
+    dense_results: List[Tuple[Union[int, str], str, float]],
     k: int = 60,
     top_n: Optional[int] = None,
-) -> List[Tuple[int, str, float]]:
+) -> List[Tuple[Union[int, str], str, float]]:
     scores: Dict[Union[int, str], float] = {}
     texts: Dict[Union[int, str], str] = {}
     for rank, (pid, text, _) in enumerate(sparse_results, start=1):

@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import List, Optional, Tuple, Union
 
@@ -7,7 +8,12 @@ from src.config.env import load_env
 
 load_env()
 
-OPENROUTER_RERANK_URL = "https://openrouter.ai/api/v1/completions"
+logger = logging.getLogger(__name__)
+
+# Chat endpoint: the request sends `messages` and the reply is read from
+# choices[0].message.content, both of which are the chat contract. The
+# text-completions endpoint takes `prompt` and returns choices[0].text.
+OPENROUTER_RERANK_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
 
 
@@ -18,6 +24,21 @@ def _get_api_key() -> str:
             "Set OPENROUTER_API_KEY in setup/.env to use reranking ([retrieval] rerank = true)"
         )
     return api_key
+
+
+def _extract_content(body: dict) -> str:
+    """Pull the model's text out of a chat-completions body.
+
+    A 200 response with an unexpected shape must not raise: the caller treats a
+    reranking failure as "keep the fusion order", which is a far better outcome
+    than a failed query.
+    """
+    try:
+        message = body["choices"][0]["message"]
+        return message.get("content") or ""
+    except (KeyError, IndexError, TypeError) as e:
+        logger.warning("Unexpected rerank response shape (%s); ignoring rerank", e)
+        return ""
 
 
 def _parse_ranked_indices(result_text: str, num_candidates: int) -> List[int]:
@@ -86,7 +107,7 @@ def rerank(
     try:
         resp = client.post(OPENROUTER_RERANK_URL, json=payload, headers=headers)
         resp.raise_for_status()
-        result_text = resp.json()["choices"][0]["message"]["content"]
+        result_text = _extract_content(resp.json())
     finally:
         if owns_client:
             client.close()
