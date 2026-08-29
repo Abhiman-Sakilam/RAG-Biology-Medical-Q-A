@@ -1,8 +1,0 @@
-#!/bin/sh
-'''exec' /home/abhiman/Documents/Rough/pro/temp/RAG-Biology-Medical-Q-A/.claude/worktrees/hybrid-retrieval-reranking/.venv/bin/python3 "$0" "$@"
-' '''
-import sys
-from httpx import main
-if __name__ == '__main__':
-    sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(main())
