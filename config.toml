@@ -23,7 +23,7 @@ rerank = false
 rerank_top_n = 5
 
 [llm]
-model = "gpt-4o-mini"
+model = "openai/gpt-oss-120b"
 max_tokens = 512
 temperature = 0.2
 
