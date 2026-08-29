@@ -1,8 +1,12 @@
 import re
 import logging
-from typing import Tuple, List, Set
+from typing import List, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
+
+# [Passage N] or [P N]. N is the passage's 1-based position in the prompt
+# context, not its corpus id -- see extract_and_validate_citations.
+_CITATION_PATTERN = re.compile(r"\[(?:Passage|P)\s+(\d+)\]")
 
 
 def parse_answer(raw: str, max_length: int = 2000) -> str:
@@ -16,44 +20,54 @@ def parse_answer(raw: str, max_length: int = 2000) -> str:
 
 
 def extract_and_validate_citations(
-    answer: str, retrieved_passage_ids: Set[int]
-) -> Tuple[str, List[Tuple[str, int]]]:
-    """Extract and validate citations from an answer.
+    answer: str, ordered_passage_ids: Sequence[Union[int, str]]
+) -> Tuple[str, List[Tuple[str, Union[int, str]]]]:
+    """Extract citation markers from an answer and resolve them to passage ids.
 
-    Finds [Passage N] or [P N] markers in the answer text.
-    Validates that cited passage IDs are in the retrieved set.
-    Strips invalid citations and returns cleaned answer + valid citations.
+    `format_passages_as_context` labels the context by 1-based position
+    ([Passage 1] .. [Passage N]), so the number the model writes is an ordinal
+    into the retrieved list -- never a corpus id. A marker is valid when that
+    ordinal addresses a passage that was actually retrieved, and it resolves to
+    that passage's real id, which may be an int or a "parent::chunk" string.
 
     Args:
         answer: The raw answer text containing potential citations.
-        retrieved_passage_ids: Set of passage IDs that were actually retrieved.
+        ordered_passage_ids: Ids of the retrieved passages, in the same order
+            they were rendered into the prompt context.
 
     Returns:
         Tuple of (cleaned_answer, citations_list) where:
-        - cleaned_answer: Answer with invalid citations removed
-        - citations_list: List of (marker, passage_id) tuples for valid citations
+        - cleaned_answer: Answer with out-of-range citations removed
+        - citations_list: (marker, passage_id) tuples in order of appearance,
+          duplicates preserved
     """
-    # Regex patterns: [Passage N] or [P N] where N is one or more digits
-    pattern = r"\[(?:Passage|P)\s+(\d+)\]"
-
-    citations = []
+    citations: List[Tuple[str, Union[int, str]]] = []
     invalid_markers = set()
-    cleaned_answer = answer
 
-    # Find all citation markers
-    for match in re.finditer(pattern, answer):
-        marker = match.group(0)  # Full marker like "[Passage 1]" or "[P 2]"
-        passage_id = int(match.group(1))  # Extract the ID
-
-        if passage_id in retrieved_passage_ids:
-            citations.append((marker, passage_id))
+    for match in _CITATION_PATTERN.finditer(answer):
+        marker = match.group(0)
+        ordinal = int(match.group(1))
+        if 1 <= ordinal <= len(ordered_passage_ids):
+            citations.append((marker, ordered_passage_ids[ordinal - 1]))
         else:
-            # Mark invalid citations for removal
             invalid_markers.add(marker)
-            logger.warning(f"Invalid citation: {marker} (passage ID {passage_id} not in retrieved set)")
+            logger.warning(
+                "Invalid citation: %s (only %d passages were retrieved)",
+                marker,
+                len(ordered_passage_ids),
+            )
 
-    # Remove invalid citations from the answer
+    cleaned_answer = answer
     for marker in invalid_markers:
         cleaned_answer = cleaned_answer.replace(marker, "")
+    if invalid_markers:
+        cleaned_answer = _tidy_whitespace(cleaned_answer)
 
     return cleaned_answer, citations
+
+
+def _tidy_whitespace(text: str) -> str:
+    """Repair the spacing left behind when a marker is spliced out mid-sentence."""
+    text = re.sub(r" +([.,;:!?])", r"\1", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()

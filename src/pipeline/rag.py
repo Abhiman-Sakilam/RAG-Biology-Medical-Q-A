@@ -178,6 +178,7 @@ def rag_query_full(
         r_cfg["top_k"] = top_k
     llm_cfg = cfg.get("llm", {})
     rewrite_cfg = cfg.get("rewrite", {})
+    citation_cfg = cfg.get("citation", {})
     guardrail_cfg = cfg.get("guardrail", {})
     max_tokens = max_tokens or llm_cfg.get("max_tokens", 512)
     temperature = llm_cfg.get("temperature", 0.2)
@@ -189,20 +190,26 @@ def rag_query_full(
     if rewrite_cfg.get("enabled", False):
         try:
             llm_client = _get_client()
-            hypothesis, expansions = rewrite_query(question, llm_client)
+            hypothesis, expansions = rewrite_query(question, llm_client, model=model)
         except Exception as e:
             logger.warning("Query rewriting failed (%s); proceeding without rewrite", e)
 
     passages = retrieve_candidates(question, r_cfg, hypothesis=hypothesis, expansions=expansions)
 
     context = format_passages_as_context(passages)
-    prompt = build_rag_prompt(context=context, question=question)
+    prompt = build_rag_prompt(
+        context=context,
+        question=question,
+        require_citations=citation_cfg.get("enforce", False),
+    )
     raw = generate(prompt, model=model, max_tokens=max_tokens, temperature=temperature)
     answer = parse_answer(raw)
 
-    # Extract and validate citations
-    passage_ids_set = {p[0] for p in passages}
-    cleaned_answer, citations = extract_and_validate_citations(answer, passage_ids_set)
+    # Extract and validate citations. Order matters: the markers the model
+    # writes are 1-based positions in the context, so the parser needs the
+    # retrieved ids in the exact order they were rendered.
+    ordered_passage_ids = [p[0] for p in passages]
+    cleaned_answer, citations = extract_and_validate_citations(answer, ordered_passage_ids)
 
     # Build citations with full passage information
     citations_with_text = []

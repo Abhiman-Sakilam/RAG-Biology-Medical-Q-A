@@ -1,7 +1,9 @@
 import re
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from openai import OpenAI
+
+from src.generation.llm import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ Respond with ONLY the numerical score (e.g., 0.85). Do not include any other tex
 
     try:
         response = llm_client.chat.completions.create(
-            model=model or "gpt-4o-mini",
+            model=resolve_model(model),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=50,
             temperature=0.0,

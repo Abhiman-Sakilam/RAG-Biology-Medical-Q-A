@@ -1,15 +1,19 @@
 import logging
 from typing import Tuple
 
+from src.generation.llm import resolve_model
+
 logger = logging.getLogger(__name__)
 
 
-def rewrite_query(question: str, llm_client) -> Tuple[str, str]:
+def rewrite_query(question: str, llm_client, model: str = None) -> Tuple[str, str]:
     """Generate a hypothetical passage and keyword expansions for the question using HyDE.
 
     Args:
         question: The user's question to rewrite.
         llm_client: An LLM client with chat_completions_create method.
+        model: Chat model id. Defaults to the configured provider model
+            (see src.generation.llm.resolve_model).
 
     Returns:
         Tuple of (hypothesis_passage, keyword_expansions).
@@ -30,7 +34,7 @@ def rewrite_query(question: str, llm_client) -> Tuple[str, str]:
 
     try:
         response = llm_client.chat.completions.create(
-            model="default",
+            model=resolve_model(model),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},

@@ -97,7 +97,7 @@ def test_rewrite_query_called_when_enabled_in_config(monkeypatch):
 
     rewrite_called = {}
 
-    def fake_rewrite_query(question, client):
+    def fake_rewrite_query(question, client, model=None):
         rewrite_called["q"] = question
         return "hypothesis about the question", "keyword expansions"
 
@@ -128,7 +128,7 @@ def test_rewrite_query_skipped_when_disabled_in_config(monkeypatch):
 
     rewrite_called = {"count": 0}
 
-    def fake_rewrite_query(question, client):
+    def fake_rewrite_query(question, client, model=None):
         rewrite_called["count"] += 1
         return "hypothesis", "expansions"
 

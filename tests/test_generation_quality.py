@@ -1,59 +1,80 @@
-import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from src.generation.parser import extract_and_validate_citations
 from src.generation.groundedness import score_groundedness
 
 
 class TestCitationExtraction:
-    """Test citation regex parsing and validation."""
+    """Test citation regex parsing and ordinal-to-passage-id resolution.
+
+    The number in a [Passage N] marker is the passage's 1-based position in the
+    prompt context, not its corpus id, so these tests use realistic corpus ids
+    (large PubMed-style ints and chunked "parent::idx" strings) that are
+    deliberately different from their ordinals.
+    """
+
+    ORDERED_IDS = [23179372, 19270706, "9797::1"]
 
     def test_extract_valid_passage_citations(self):
-        """Test extraction of [Passage N] format citations."""
+        """[Passage N] resolves to the id at position N of the retrieved list."""
         answer = "According to research [Passage 1], the finding is significant. [Passage 3] confirms this."
-        retrieved_ids = {1, 3, 5}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
-        assert len(citations) == 2
-        assert citations[0] == ("[Passage 1]", 1)
-        assert citations[1] == ("[Passage 3]", 3)
+        assert citations == [("[Passage 1]", 23179372), ("[Passage 3]", "9797::1")]
         assert "[Passage 1]" in cleaned
         assert "[Passage 3]" in cleaned
 
     def test_extract_shorthand_p_citations(self):
         """Test extraction of [P N] format citations."""
-        answer = "Some evidence [P 2] shows that [P 4] is true."
-        retrieved_ids = {2, 4, 6}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        answer = "Some evidence [P 2] shows that [P 3] is true."
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
+
+        assert citations == [("[P 2]", 19270706), ("[P 3]", "9797::1")]
+
+    def test_chunked_string_id_resolves(self):
+        """Regression: a chunk id is a string and must survive resolution intact."""
+        _, citations = extract_and_validate_citations("Claim [Passage 3].", self.ORDERED_IDS)
+        assert citations == [("[Passage 3]", "9797::1")]
+
+    def test_ordinal_is_not_compared_against_corpus_id(self):
+        """Regression: ordinals must not be validated against the id values.
+
+        Previously the marker's number was tested for membership in the set of
+        retrieved ids, so every citation over a real corpus was judged invalid
+        and silently stripped from the answer.
+        """
+        answer = "Histone methylation is altered [Passage 1] and affects proliferation [Passage 2]."
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
         assert len(citations) == 2
-        assert citations[0] == ("[P 2]", 2)
-        assert citations[1] == ("[P 4]", 4)
+        assert "[Passage 1]" in cleaned and "[Passage 2]" in cleaned
 
-    def test_invalid_citation_stripped(self):
-        """Test that citations with invalid passage IDs are stripped."""
+    def test_out_of_range_citation_stripped(self):
+        """Test that citations pointing past the retrieved list are stripped."""
         answer = "Claim one [Passage 1] is valid. Claim two [Passage 99] is invalid."
-        retrieved_ids = {1, 3, 5}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
-        assert len(citations) == 1
-        assert citations[0] == ("[Passage 1]", 1)
+        assert citations == [("[Passage 1]", 23179372)]
         assert "[Passage 99]" not in cleaned
         assert "[Passage 1]" in cleaned
+
+    def test_stripping_leaves_no_whitespace_scar(self):
+        """Removing a marker must not leave a dangling space before punctuation."""
+        answer = "Alpha is true [Passage 42]. Beta follows [Passage 1]."
+        cleaned, _ = extract_and_validate_citations(answer, self.ORDERED_IDS)
+
+        assert cleaned == "Alpha is true. Beta follows [Passage 1]."
 
     def test_malformed_citations_ignored(self):
         """Test that malformed citations are ignored."""
         answer = "Valid [Passage 1] and malformed [Passage] and [P] are present."
-        retrieved_ids = {1, 2}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
-        assert len(citations) == 1
-        assert citations[0] == ("[Passage 1]", 1)
+        assert citations == [("[Passage 1]", 23179372)]
 
     def test_no_citations(self):
         """Test handling of answers with no citations."""
         answer = "This answer has no citations at all."
-        retrieved_ids = {1, 2, 3}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
         assert len(citations) == 0
         assert cleaned == answer
@@ -61,12 +82,16 @@ class TestCitationExtraction:
     def test_duplicate_citations(self):
         """Test handling of duplicate citations in same answer."""
         answer = "Study [Passage 1] and [Passage 1] both support this."
-        retrieved_ids = {1, 2}
-        cleaned, citations = extract_and_validate_citations(answer, retrieved_ids)
+        cleaned, citations = extract_and_validate_citations(answer, self.ORDERED_IDS)
 
-        # Should preserve duplicates as they appear
         assert len(citations) == 2
-        assert all(c == ("[Passage 1]", 1) for c in citations)
+        assert all(c == ("[Passage 1]", 23179372) for c in citations)
+
+    def test_empty_retrieved_list_strips_everything(self):
+        """With nothing retrieved, no marker can be valid."""
+        cleaned, citations = extract_and_validate_citations("Claim [Passage 1].", [])
+        assert citations == []
+        assert "[Passage 1]" not in cleaned
 
 
 class TestGroundednessScoring:

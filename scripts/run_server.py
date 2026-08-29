@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from src.pipeline.rag import rag_query, rag_query_full, load_indices, _load_config
+from src.pipeline.rag import rag_query_full, load_indices, _load_config
 
 app = FastAPI(title="RAG API")
 _cfg = _load_config()
@@ -33,14 +33,16 @@ class QueryRequest(BaseModel):
 
 
 class PassageOut(BaseModel):
-    passage_id: int
+    # Chunked passages carry a "parent::idx" string id (see src/data/chunking.py),
+    # so this must not be narrowed to int.
+    passage_id: int | str
     passage: str
     score: float
 
 
 class CitationOut(BaseModel):
     marker: str
-    passage_id: int
+    passage_id: int | str
     text: str
     score: float
 
